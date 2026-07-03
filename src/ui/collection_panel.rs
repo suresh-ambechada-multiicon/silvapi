@@ -3,7 +3,7 @@ use std::{collections::HashSet, ops::Range};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, WindowExt as _, h_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     v_flex,
@@ -14,7 +14,7 @@ use crate::{
     state::{AppEvent, AppState},
 };
 
-use super::actions::{RenameSelected, SendRequest};
+use super::actions::{FocusActiveRequest, RenameSelected, SendRequest};
 
 // ── Drag payload ────────────────────────────────────────────────────────────
 
@@ -326,10 +326,13 @@ impl CollectionPanel {
                     .overflow_hidden()
                     .when(is_folder, |el| {
                         el.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(if is_expanded { "▾" } else { "▸" }),
+                            Icon::new(if is_expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
                         )
                     })
                     .when(!method_str.is_empty(), |el| {
@@ -446,16 +449,19 @@ impl CollectionPanel {
                     let app_dup = app_dup.clone();
                     let app_del = app_del.clone();
 
-                    menu.item(PopupMenuItem::new("New HTTP").on_click(move |_, _, cx| {
-                        let target = Some(target_for_http.as_str());
-                        app_new_http.update(cx, |state, cx| {
-                            if let Some(new_id) = state.add_request_to_target(target) {
-                                state.select_request(&new_id);
-                                cx.emit(AppEvent::RequestSelected);
-                            }
-                            cx.emit(AppEvent::WorkspaceChanged);
-                        });
-                    }))
+                    menu.item(
+                        PopupMenuItem::new("New HTTP").on_click(move |_, window, cx| {
+                            let target = Some(target_for_http.as_str());
+                            app_new_http.update(cx, |state, cx| {
+                                if let Some(new_id) = state.add_request_to_target(target) {
+                                    state.select_request(&new_id);
+                                    cx.emit(AppEvent::RequestSelected);
+                                }
+                                cx.emit(AppEvent::WorkspaceChanged);
+                            });
+                            window.dispatch_action(Box::new(FocusActiveRequest), cx);
+                        }),
+                    )
                     .item(PopupMenuItem::new("New Folder").on_click(move |_, _, cx| {
                         let target = Some(target_for_folder.as_str());
                         app_new_folder.update(cx, |state, cx| {
@@ -767,17 +773,20 @@ impl Render for CollectionPanel {
                         let target_http = selected_for_new.clone();
                         let target_folder = selected_for_new.clone();
 
-                        menu.item(PopupMenuItem::new("New HTTP").on_click(move |_, _, cx| {
-                            app_new_http.update(cx, |state, cx| {
-                                if let Some(new_id) =
-                                    state.add_request_to_target(target_http.as_deref())
-                                {
-                                    state.select_request(&new_id);
-                                    cx.emit(AppEvent::RequestSelected);
-                                }
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
+                        menu.item(
+                            PopupMenuItem::new("New HTTP").on_click(move |_, window, cx| {
+                                app_new_http.update(cx, |state, cx| {
+                                    if let Some(new_id) =
+                                        state.add_request_to_target(target_http.as_deref())
+                                    {
+                                        state.select_request(&new_id);
+                                        cx.emit(AppEvent::RequestSelected);
+                                    }
+                                    cx.emit(AppEvent::WorkspaceChanged);
+                                });
+                                window.dispatch_action(Box::new(FocusActiveRequest), cx);
+                            }),
+                        )
                         .item(PopupMenuItem::new("New Folder").on_click(move |_, _, cx| {
                             app_new_folder.update(cx, |state, cx| {
                                 state.add_folder_to_target(target_folder.as_deref());

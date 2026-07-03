@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Selectable as _, Sizable as _,
+    ActiveTheme, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
     h_flex,
@@ -467,7 +467,8 @@ impl RequestPanel {
             .children(rows)
             .child(
                 Button::new("add-param")
-                    .label("+ Add")
+                    .icon(IconName::Plus)
+                    .label("Add")
                     .ghost()
                     .xsmall()
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -496,7 +497,8 @@ impl RequestPanel {
             .children(rows)
             .child(
                 Button::new("add-header")
-                    .label("+ Add")
+                    .icon(IconName::Plus)
+                    .label("Add")
                     .ghost()
                     .xsmall()
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -909,9 +911,7 @@ impl RequestPanel {
                     if let Some((id, resp)) = response_to_store {
                         cx.background_executor()
                             .spawn(async move {
-                                if let Err(err) = crate::storage::append_response(&id, &resp) {
-                                    eprintln!("Failed to save response history: {}", err);
-                                }
+                                let _ = crate::storage::append_response(&id, &resp);
                             })
                             .detach();
                     }
@@ -1074,7 +1074,8 @@ fn kv_input_row(
                 if is_headers { "h" } else { "p" },
                 i
             ))
-            .label("✕")
+            .icon(IconName::Close)
+            .tooltip("Remove row")
             .ghost()
             .xsmall()
             .on_click(cx.listener(move |this, _, window, cx| {

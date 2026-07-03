@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Root, Sizable as _, Theme, ThemeRegistry,
+    ActiveTheme, Icon, IconName, Root, Sizable as _, Theme, ThemeRegistry,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -14,7 +14,8 @@ use crate::state::{AppEvent, AppState};
 
 use super::{
     actions::{
-        ApiPicker, CloseSettings, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
+        ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
+        FocusResponsePanel, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
         ThemePicker, ToggleMaximize,
     },
     collection_panel::CollectionPanel,
@@ -30,7 +31,8 @@ pub struct AppView {
     collection_panel: Entity<CollectionPanel>,
     request_panel: Entity<RequestPanel>,
     response_panel: Entity<ResponsePanel>,
-    resize_state: Entity<ResizableState>,
+    row_resize_state: Entity<ResizableState>,
+    column_resize_state: Entity<ResizableState>,
     theme_picker_open: bool,
     theme_focus: FocusHandle,
     theme_cursor: usize,
@@ -45,12 +47,33 @@ pub struct AppView {
     api_cursor: usize,
     settings_open: bool,
     settings_focus: FocusHandle,
+    shortcut_inputs: Vec<ShortcutInput>,
+    available_fonts: Vec<String>,
+    selected_font_family: String,
+    font_picker_open: bool,
+    font_search: Entity<InputState>,
+    font_list: Vec<String>,
+    font_cursor: usize,
+    font_scroll: gpui::UniformListScrollHandle,
+    font_size_input: Entity<InputState>,
     api_scroll: ScrollHandle,
     save_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
     maximized_panel: MaximizedPanel,
     response_layout: ResponseLayout,
     resize_state_v: Entity<ResizableState>,
+}
+
+#[derive(Clone)]
+struct ShortcutSpec {
+    id: &'static str,
+    label: &'static str,
+    default_key: &'static str,
+}
+
+struct ShortcutInput {
+    spec: ShortcutSpec,
+    input: Entity<InputState>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,6 +97,213 @@ impl Focusable for AppView {
 }
 
 impl AppView {
+    fn shortcut_specs() -> Vec<ShortcutSpec> {
+        vec![
+            ShortcutSpec {
+                id: "theme_picker",
+                label: "Open Theme Picker",
+                default_key: "ctrl-k",
+            },
+            ShortcutSpec {
+                id: "api_picker",
+                label: "Open API Picker",
+                default_key: "ctrl-p",
+            },
+            ShortcutSpec {
+                id: "next_api",
+                label: "Next API",
+                default_key: "ctrl-tab",
+            },
+            ShortcutSpec {
+                id: "prev_api",
+                label: "Previous API",
+                default_key: "shift-ctrl-tab",
+            },
+            ShortcutSpec {
+                id: "send_request",
+                label: "Send Request",
+                default_key: "ctrl-enter",
+            },
+            ShortcutSpec {
+                id: "rename_selected",
+                label: "Rename Selected",
+                default_key: "enter",
+            },
+            ShortcutSpec {
+                id: "toggle_maximize",
+                label: "Toggle Maximize Panel",
+                default_key: "shift-escape",
+            },
+            ShortcutSpec {
+                id: "open_settings",
+                label: "Open Settings",
+                default_key: "ctrl-,",
+            },
+            ShortcutSpec {
+                id: "focus_active_request",
+                label: "Reveal Active Request",
+                default_key: "ctrl-shift-f",
+            },
+            ShortcutSpec {
+                id: "focus_collection_panel",
+                label: "Focus Request List",
+                default_key: "alt-1",
+            },
+            ShortcutSpec {
+                id: "focus_request_panel",
+                label: "Focus Request Editor",
+                default_key: "alt-2",
+            },
+            ShortcutSpec {
+                id: "focus_response_panel",
+                label: "Focus Response Panel",
+                default_key: "alt-3",
+            },
+        ]
+    }
+
+    fn system_font_families() -> Vec<String> {
+        let mut fonts = font_kit::source::SystemSource::new()
+            .all_families()
+            .unwrap_or_default();
+        fonts.sort_by_key(|font| font.to_lowercase());
+        fonts.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+
+        let mut out = vec![".SystemUIFont".to_string()];
+        for preferred in ["Inter", "Arial", "DejaVu Sans", "Noto Sans", "Segoe UI"] {
+            if fonts.iter().any(|font| font == preferred) {
+                out.push(preferred.to_string());
+            }
+        }
+        for font in fonts {
+            if !out
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&font))
+            {
+                out.push(font);
+            }
+        }
+        out
+    }
+
+    fn shortcut_key(spec: &ShortcutSpec) -> String {
+        let key = format!("shortcut.{}", spec.id);
+        crate::storage::load_setting(&key)
+            .ok()
+            .flatten()
+            .filter(|saved| Keystroke::parse(saved).is_ok())
+            .unwrap_or_else(|| spec.default_key.to_string())
+    }
+
+    fn bind_shortcut(id: &str, key: &str, cx: &mut Context<Self>) {
+        if Keystroke::parse(key).is_err() {
+            return;
+        }
+        match id {
+            "theme_picker" => cx.bind_keys([KeyBinding::new(key, ThemePicker, None)]),
+            "api_picker" => cx.bind_keys([KeyBinding::new(key, ApiPicker, None)]),
+            "next_api" => cx.bind_keys([KeyBinding::new(key, NextApi, None)]),
+            "prev_api" => cx.bind_keys([KeyBinding::new(key, PrevApi, None)]),
+            "send_request" => cx.bind_keys([KeyBinding::new(key, SendRequest, None)]),
+            "rename_selected" => cx.bind_keys([KeyBinding::new(key, RenameSelected, None)]),
+            "toggle_maximize" => cx.bind_keys([KeyBinding::new(key, ToggleMaximize, None)]),
+            "open_settings" => cx.bind_keys([KeyBinding::new(key, OpenSettings, None)]),
+            "focus_active_request" => {
+                cx.bind_keys([KeyBinding::new(key, FocusActiveRequest, None)])
+            }
+            "focus_collection_panel" => {
+                cx.bind_keys([KeyBinding::new(key, FocusCollectionPanel, None)])
+            }
+            "focus_request_panel" => cx.bind_keys([KeyBinding::new(key, FocusRequestPanel, None)]),
+            "focus_response_panel" => {
+                cx.bind_keys([KeyBinding::new(key, FocusResponsePanel, None)])
+            }
+            _ => {}
+        }
+    }
+
+    fn bind_configured_shortcuts(cx: &mut Context<Self>) {
+        for spec in Self::shortcut_specs() {
+            let key = Self::shortcut_key(&spec);
+            Self::bind_shortcut(spec.id, &key, cx);
+        }
+    }
+
+    fn save_shortcut(spec: &ShortcutSpec, input: &Entity<InputState>, cx: &mut Context<Self>) {
+        let value = input.read(cx).value().trim().to_lowercase();
+        if value.is_empty() || Keystroke::parse(&value).is_err() {
+            return;
+        }
+        let key = format!("shortcut.{}", spec.id);
+        if crate::storage::save_setting(&key, &value).is_err() {
+            return;
+        }
+        Self::bind_shortcut(spec.id, &value, cx);
+    }
+
+    fn configured_font_family(cx: &mut Context<Self>) -> SharedString {
+        crate::storage::load_setting("ui.font_family")
+            .ok()
+            .flatten()
+            .filter(|font| !font.trim().is_empty())
+            .map(SharedString::from)
+            .unwrap_or_else(|| cx.theme().font_family.clone())
+    }
+
+    fn configured_font_size(cx: &mut Context<Self>) -> Pixels {
+        crate::storage::load_setting("ui.font_size")
+            .ok()
+            .flatten()
+            .and_then(|size| size.parse::<f32>().ok())
+            .filter(|size| (10.0..=24.0).contains(size))
+            .map(px)
+            .unwrap_or_else(|| cx.theme().font_size)
+    }
+
+    fn apply_user_font_settings(cx: &mut Context<Self>) {
+        let font_family = Self::configured_font_family(cx);
+        let font_size = Self::configured_font_size(cx);
+        let theme = Theme::global_mut(cx);
+        theme.font_family = font_family;
+        theme.font_size = font_size;
+        cx.refresh_windows();
+    }
+
+    fn apply_user_font_settings_app(cx: &mut App) {
+        if let Some(font_family) = crate::storage::load_setting("ui.font_family")
+            .ok()
+            .flatten()
+            .filter(|font| !font.trim().is_empty())
+        {
+            Theme::global_mut(cx).font_family = SharedString::from(font_family);
+        }
+        if let Some(font_size) = crate::storage::load_setting("ui.font_size")
+            .ok()
+            .flatten()
+            .and_then(|size| size.parse::<f32>().ok())
+            .filter(|size| (10.0..=24.0).contains(size))
+        {
+            Theme::global_mut(cx).font_size = px(font_size);
+        }
+        cx.refresh_windows();
+    }
+
+    fn save_font_settings(family: &str, size_input: &Entity<InputState>, cx: &mut Context<Self>) {
+        let family = family.trim().to_string();
+        if !family.is_empty() {
+            let _ = crate::storage::save_setting("ui.font_family", &family);
+        }
+
+        let size_text = size_input.read(cx).value().trim().to_string();
+        if let Ok(size) = size_text.parse::<f32>() {
+            if (10.0..=24.0).contains(&size) {
+                let _ = crate::storage::save_setting("ui.font_size", &size.to_string());
+            }
+        }
+
+        Self::apply_user_font_settings(cx);
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let theme_focus = cx.focus_handle();
@@ -83,7 +313,8 @@ impl AppView {
         let collection_panel = cx.new(|cx| CollectionPanel::new(app_state.clone(), window, cx));
         let request_panel = cx.new(|cx| RequestPanel::new(app_state.clone(), window, cx));
         let response_panel = cx.new(|cx| ResponsePanel::new(app_state.clone(), window, cx));
-        let resize_state = cx.new(|_| ResizableState::default());
+        let row_resize_state = cx.new(|_| ResizableState::default());
+        let column_resize_state = cx.new(|_| ResizableState::default());
         let storage_sub = cx.subscribe_in(
             &app_state,
             window,
@@ -105,9 +336,7 @@ impl AppView {
                             .background_executor()
                             .spawn(async move { crate::storage::save_workspace(&workspace) })
                             .await;
-                        if let Err(err) = result {
-                            eprintln!("Failed to save workspace: {}", err);
-                        }
+                        let _ = result;
                     }));
                 }
                 if matches!(ev, AppEvent::WorkspaceChanged)
@@ -162,31 +391,79 @@ impl AppView {
             |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => this.update_api_list(cx),
                 InputEvent::PressEnter { .. } => {
-                    this.close_api_picker(window, cx);
                     if let Some((id, _)) = this.api_list.get(this.api_cursor) {
-                        let req_id = id.clone();
-                        this.app_state.update(cx, |state, cx| {
-                            if state.select_request(&req_id) {
-                                cx.emit(AppEvent::RequestSelected);
-                            }
-                        });
+                        this.select_api_from_picker(id.clone(), window, cx);
                     }
-                    cx.notify();
                 }
                 _ => {}
             },
         );
 
-        cx.bind_keys([
-            KeyBinding::new("ctrl-k", ThemePicker, None),
-            KeyBinding::new("ctrl-p", ApiPicker, None),
-            KeyBinding::new("ctrl-tab", NextApi, None),
-            KeyBinding::new("shift-ctrl-tab", PrevApi, None),
-            KeyBinding::new("ctrl-enter", SendRequest, None),
-            KeyBinding::new("enter", RenameSelected, None),
-            KeyBinding::new("shift-escape", ToggleMaximize, None),
-            KeyBinding::new("ctrl-,", OpenSettings, None),
-        ]);
+        let font_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search font..."));
+        let font_search_sub = cx.subscribe_in(
+            &font_search,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => this.update_font_list(cx),
+                InputEvent::PressEnter { .. } => {
+                    if let Some(font) = this.font_list.get(this.font_cursor).cloned() {
+                        this.select_font(font, cx);
+                    }
+                    this.close_font_picker(window, cx);
+                }
+                _ => {}
+            },
+        );
+
+        Self::apply_user_font_settings(cx);
+        let available_fonts = Self::system_font_families();
+        let selected_font_family = crate::storage::load_setting("ui.font_family")
+            .ok()
+            .flatten()
+            .filter(|font| available_fonts.iter().any(|available| available == font))
+            .unwrap_or_else(|| cx.theme().font_family.to_string());
+        let font_size_input = cx.new(|cx| InputState::new(window, cx).placeholder("16"));
+        font_size_input.update(cx, |state, cx| {
+            let value = crate::storage::load_setting("ui.font_size")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "16".to_string());
+            state.set_value(value, window, cx);
+        });
+        let font_size_for_sub = font_size_input.clone();
+        let font_size_sub = cx.subscribe_in(
+            &font_size_input,
+            window,
+            move |this, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let family = this.selected_font_family.clone();
+                    Self::save_font_settings(&family, &font_size_for_sub, cx);
+                }
+            },
+        );
+
+        let mut shortcut_inputs = Vec::new();
+        let mut shortcut_subs = Vec::new();
+        for spec in Self::shortcut_specs() {
+            let value = Self::shortcut_key(&spec);
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(spec.default_key));
+            input.update(cx, |state, cx| state.set_value(value, window, cx));
+            let spec_for_sub = spec.clone();
+            let input_for_sub = input.clone();
+            shortcut_subs.push(cx.subscribe_in(
+                &input,
+                window,
+                move |_, _, ev: &InputEvent, _, cx| match ev {
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        Self::save_shortcut(&spec_for_sub, &input_for_sub, cx);
+                    }
+                    _ => {}
+                },
+            ));
+            shortcut_inputs.push(ShortcutInput { spec, input });
+        }
+
+        Self::bind_configured_shortcuts(cx);
 
         let fh = focus_handle.clone();
         cx.defer_in(window, move |_this, window, cx| {
@@ -200,7 +477,8 @@ impl AppView {
             collection_panel,
             request_panel,
             response_panel,
-            resize_state,
+            row_resize_state,
+            column_resize_state,
             theme_picker_open: false,
             theme_focus,
             theme_cursor: 0,
@@ -215,9 +493,28 @@ impl AppView {
             api_cursor: 0,
             settings_open: false,
             settings_focus: cx.focus_handle(),
+            shortcut_inputs,
+            available_fonts,
+            selected_font_family,
+            font_picker_open: false,
+            font_search,
+            font_list: Vec::new(),
+            font_cursor: 0,
+            font_scroll: gpui::UniformListScrollHandle::new(),
+            font_size_input,
             api_scroll: ScrollHandle::new(),
             save_task: None,
-            _subs: vec![storage_sub, theme_search_sub, api_search_sub],
+            _subs: {
+                let mut subs = vec![
+                    storage_sub,
+                    theme_search_sub,
+                    api_search_sub,
+                    font_search_sub,
+                    font_size_sub,
+                ];
+                subs.extend(shortcut_subs);
+                subs
+            },
             maximized_panel: MaximizedPanel::None,
             response_layout: ResponseLayout::Row,
             resize_state_v: cx.new(|_| ResizableState::default()),
@@ -227,6 +524,31 @@ impl AppView {
     fn update_api_list(&mut self, cx: &mut Context<Self>) {
         self.rebuild_api_list(cx);
         cx.notify();
+    }
+
+    fn update_font_list(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_font_list(cx);
+        cx.notify();
+    }
+
+    fn rebuild_font_list(&mut self, cx: &App) {
+        let query = self.font_search.read(cx).value().to_lowercase();
+        self.font_list = self
+            .available_fonts
+            .iter()
+            .filter(|font| query.is_empty() || font.to_lowercase().contains(&query))
+            .cloned()
+            .collect();
+
+        self.font_cursor = self
+            .font_list
+            .iter()
+            .position(|font| font == &self.selected_font_family)
+            .unwrap_or(0);
+        if !self.font_list.is_empty() {
+            self.font_scroll
+                .scroll_to_item(self.font_cursor, ScrollStrategy::Nearest);
+        }
     }
 
     fn rebuild_api_list(&mut self, cx: &App) {
@@ -288,12 +610,57 @@ impl AppView {
         cx.notify();
     }
 
+    fn select_api_from_picker(
+        &mut self,
+        req_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.api_picker_open = false;
+        self.app_state.update(cx, |state, cx| {
+            if state.select_request(&req_id) {
+                cx.emit(AppEvent::RequestSelected);
+            }
+        });
+        window.dispatch_action(Box::new(FocusActiveRequest), cx);
+        cx.notify();
+    }
+
     fn close_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.theme_picker_open = false;
         let fh = self.focus_handle.clone();
         cx.defer_in(window, move |_, window, cx| {
             fh.focus(window, cx);
         });
+        cx.notify();
+    }
+
+    fn open_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.font_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.rebuild_font_list(cx);
+        self.font_picker_open = true;
+        cx.notify();
+
+        let fh = self.font_search.read(cx).focus_handle(cx);
+        cx.defer_in(window, move |_, window, cx| {
+            fh.focus(window, cx);
+        });
+    }
+
+    fn close_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.font_picker_open = false;
+        let fh = self.settings_focus.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            fh.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn select_font(&mut self, font: String, cx: &mut Context<Self>) {
+        self.selected_font_family = font.clone();
+        let _ = crate::storage::save_setting("ui.font_family", &font);
+        Self::save_font_settings(&font, &self.font_size_input, cx);
         cx.notify();
     }
 
@@ -354,13 +721,6 @@ impl AppView {
             .position(|n| n == &current)
             .unwrap_or(0);
 
-        println!(
-            "update_theme_list: current={}, found pos={}, theme_list_len={}",
-            current,
-            self.theme_cursor,
-            self.theme_list.len()
-        );
-
         if !self.theme_list.is_empty() {
             self.theme_scroll.scroll_to_item(self.theme_cursor);
         }
@@ -400,6 +760,7 @@ impl AppView {
                 .cloned()
             {
                 Theme::global_mut(cx).apply_config(&cfg);
+                Self::apply_user_font_settings(cx);
                 cx.refresh_windows();
             }
         }
@@ -413,15 +774,14 @@ impl AppView {
             .cloned()
         {
             Theme::global_mut(cx).apply_config(&cfg);
+            Self::apply_user_font_settings(cx);
             cx.refresh_windows();
         }
     }
 
     fn commit_theme_selection(&mut self, _cx: &mut Context<Self>) {
         if let Some(name) = self.theme_list.get(self.theme_cursor) {
-            if let Err(err) = crate::storage::save_theme_name(name) {
-                eprintln!("Failed to save theme: {}", err);
-            }
+            let _ = crate::storage::save_theme_name(name);
         }
     }
 }
@@ -519,6 +879,30 @@ impl Render for AppView {
                     this.open_api_picker(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &FocusCollectionPanel, window, cx| {
+                this.maximized_panel = MaximizedPanel::None;
+                let fh = this.collection_panel.read(cx).focus_handle(cx);
+                cx.defer_in(window, move |_, window, cx| {
+                    fh.focus(window, cx);
+                });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusRequestPanel, window, cx| {
+                this.maximized_panel = MaximizedPanel::None;
+                let fh = this.request_panel.read(cx).focus_handle(cx);
+                cx.defer_in(window, move |_, window, cx| {
+                    fh.focus(window, cx);
+                });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusResponsePanel, window, cx| {
+                this.maximized_panel = MaximizedPanel::None;
+                let fh = this.response_panel.read(cx).focus_handle(cx);
+                cx.defer_in(window, move |_, window, cx| {
+                    fh.focus(window, cx);
+                });
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &SendRequest, window, cx| {
                 this.request_panel.update(cx, |panel, cx| {
                     panel.send_request(window, cx);
@@ -534,8 +918,6 @@ impl Render for AppView {
                     let cf = c_focus.contains_focused(window, cx);
                     let rf = req_focus.contains_focused(window, cx);
                     let resf = res_focus.contains_focused(window, cx);
-                    let global_focused = window.focused(cx).is_some();
-                    println!("ToggleMaximize: global_focused={} Collection={} Request={} Response={}", global_focused, cf, rf, resf);
 
                     if cf {
                         this.maximized_panel = MaximizedPanel::Collection;
@@ -578,7 +960,7 @@ impl Render for AppView {
                                 match self.response_layout {
                                     ResponseLayout::Row => {
                                         h_resizable("main-panels")
-                                        .with_state(&self.resize_state)
+                                        .with_state(&self.row_resize_state)
                                         .child(
                                             resizable_panel()
                                                 .size(px(260.))
@@ -587,19 +969,21 @@ impl Render for AppView {
                                         )
                                         .child(
                                             resizable_panel()
-                                                .size(px(400.))
-                                                .size_range(px(300.)..px(800.))
+                                                .size(px(520.))
+                                                .size_range(px(340.)..px(900.))
                                                 .child(self.request_panel.clone()),
                                         )
                                         .child(
                                             resizable_panel()
+                                                .size(px(640.))
+                                                .size_range(px(360.)..px(1600.))
                                                 .child(self.response_panel.clone()),
                                         )
                                         .into_any_element()
                                     }
                                     ResponseLayout::Column => {
                                         h_resizable("main-panels-col")
-                                        .with_state(&self.resize_state)
+                                        .with_state(&self.column_resize_state)
                                         .child(
                                             resizable_panel()
                                                 .size(px(260.))
@@ -608,6 +992,8 @@ impl Render for AppView {
                                         )
                                         .child(
                                             resizable_panel()
+                                                .size(px(1000.))
+                                                .size_range(px(620.)..px(2200.))
                                                 .child(
                                                     v_resizable("req-resp-col")
                                                         .with_state(&self.resize_state_v)
@@ -829,23 +1215,11 @@ impl Render for AppView {
                                                             gpui::MouseButton::Left,
                                                             cx.listener(
                                                                 move |this, _, window, cx| {
-                                                                    this.close_api_picker(
-                                                                        window, cx,
-                                                                    );
-                                                                    let req_id = req_id.clone();
-                                                                    this.app_state.update(
+                                                                    this.select_api_from_picker(
+                                                                        req_id.clone(),
+                                                                        window,
                                                                         cx,
-                                                                        |state, cx| {
-                                                                            if state
-                                                                                .select_request(
-                                                                                    &req_id,
-                                                                                )
-                                                                            {
-                                                                                cx.emit(AppEvent::RequestSelected);
-                                                                            }
-                                                                        },
                                                                     );
-                                                                    cx.notify();
                                                                 },
                                                             ),
                                                         )
@@ -862,7 +1236,189 @@ impl Render for AppView {
                         ),
                 )
             })
-            .when(self.settings_open, |el| {
+            .when(self.font_picker_open, |el| {
+                let visible_rows = self.font_list.len().max(1).min(12) as f32;
+                let list_height = 8. + visible_rows * 36.;
+                let panel_height = 62. + list_height;
+                let font_count = self.font_list.len();
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("font-picker-panel")
+                                .w(px(420.))
+                                .h(px(panel_height))
+                                .max_h(px(560.))
+                                .flex()
+                                .flex_col()
+                                .bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_lg()
+                                .shadow_lg()
+                                .overflow_hidden()
+                                .on_key_down(cx.listener(
+                                    move |this, event: &KeyDownEvent, window, cx| {
+                                        let n = this.font_list.len();
+                                        match event.keystroke.key.as_str() {
+                                            "up" if n > 0 => {
+                                                if this.font_cursor > 0 {
+                                                    this.font_cursor -= 1;
+                                                } else {
+                                                    this.font_cursor = n - 1;
+                                                }
+                                                this.font_scroll
+                                                    .scroll_to_item(this.font_cursor, ScrollStrategy::Nearest);
+                                                cx.notify();
+                                            }
+                                            "down" if n > 0 => {
+                                                this.font_cursor = (this.font_cursor + 1) % n;
+                                                this.font_scroll
+                                                    .scroll_to_item(this.font_cursor, ScrollStrategy::Nearest);
+                                                cx.notify();
+                                            }
+                                            "enter" if n > 0 => {
+                                                if let Some(font) =
+                                                    this.font_list.get(this.font_cursor).cloned()
+                                                {
+                                                    this.select_font(font, cx);
+                                                }
+                                                this.close_font_picker(window, cx);
+                                            }
+                                            "escape" => {
+                                                this.close_font_picker(window, cx);
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .px_3()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .child(Input::new(&self.font_search)),
+                                )
+                                .child(
+                                    div()
+                                        .id("font-list")
+                                        .h(px(list_height))
+                                        .max_h(px(498.))
+                                        .min_h_0()
+                                        .when(font_count == 0, |el| {
+                                            el.child(
+                                                div()
+                                                    .w_full()
+                                                    .px_4()
+                                                    .py_3()
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("No fonts found"),
+                                            )
+                                        })
+                                        .when(font_count > 0, |el| {
+                                            el.child(
+                                                uniform_list(
+                                                    "font-picker-list",
+                                                    font_count,
+                                                    cx.processor(
+                                                        |this: &mut AppView,
+                                                         range: std::ops::Range<usize>,
+                                                         _window,
+                                                         cx| {
+                                                            let mut rows: Vec<AnyElement> = Vec::new();
+                                                            for idx in range {
+                                                                if idx >= this.font_list.len() {
+                                                                    continue;
+                                                                }
+                                                                let font = this.font_list[idx].clone();
+                                                                let is_cursor =
+                                                                    idx == this.font_cursor;
+                                                                let is_selected =
+                                                                    font == this.selected_font_family;
+                                                                let bg = if is_cursor {
+                                                                    cx.theme().primary.opacity(0.1)
+                                                                } else {
+                                                                    gpui::transparent_black()
+                                                                };
+                                                                let text_color = if is_selected {
+                                                                    cx.theme().primary
+                                                                } else {
+                                                                    cx.theme().foreground
+                                                                };
+                                                                let font_for_click = font.clone();
+                                                                let font_for_style = font.clone();
+                                                                rows.push(
+                                                                    h_flex()
+                                                                        .id(SharedString::from(
+                                                                            format!(
+                                                                                "font-picker-row-{}",
+                                                                                idx
+                                                                            ),
+                                                                        ))
+                                                                        .w_full()
+                                                                        .h(px(36.))
+                                                                        .px_3()
+                                                                        .gap_2()
+                                                                        .items_center()
+                                                                        .bg(bg)
+                                                                        .cursor_pointer()
+                                                                        .on_mouse_down(
+                                                                            gpui::MouseButton::Left,
+                                                                            cx.listener(
+                                                                                move |this, _, window, cx| {
+                                                                                    this.font_cursor = idx;
+                                                                                    this.select_font(font_for_click.clone(), cx);
+                                                                                    this.close_font_picker(window, cx);
+                                                                                },
+                                                                            ),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .w(px(18.))
+                                                                                .child(if is_selected {
+                                                                                    Icon::new(IconName::Check)
+                                                                                        .xsmall()
+                                                                                        .text_color(cx.theme().primary)
+                                                                                        .into_any_element()
+                                                                                } else {
+                                                                                    div().into_any_element()
+                                                                                }),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .flex_1()
+                                                                                .overflow_hidden()
+                                                                                .text_ellipsis()
+                                                                                .text_sm()
+                                                                                .text_color(text_color)
+                                                                                .font_family(font_for_style)
+                                                                                .child(font),
+                                                                        )
+                                                                        .into_any_element(),
+                                                                );
+                                                            }
+                                                            rows
+                                                        },
+                                                    ),
+                                                )
+                                                .track_scroll(&self.font_scroll)
+                                                .size_full(),
+                                            )
+                                        }),
+                                ),
+                        ),
+                )
+            })
+            .when(self.settings_open && !self.font_picker_open, |el| {
                 el.child(
                     div()
                         .absolute()
@@ -901,10 +1457,12 @@ impl Render for AppView {
                                                 .justify_between()
                                                 .child(div().font_weight(gpui::FontWeight::BOLD).child("Settings"))
                                                 .child(
-                                                    div()
-                                                        .cursor_pointer()
-                                                        .child("✕")
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                    Button::new("settings-close")
+                                                        .icon(IconName::Close)
+                                                        .tooltip("Close settings")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .on_click(cx.listener(|this, _, window, cx| {
                                                             this.close_settings(window, cx);
                                                         }))
                                                 )
@@ -914,16 +1472,23 @@ impl Render for AppView {
                                                 .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Keybindings"))
                                                 .child(
                                                     v_flex().gap_2().mt_2()
-                                                        .child(h_flex().justify_between().child("Open Theme Picker").child("Ctrl+K"))
-                                                        .child(h_flex().justify_between().child("Open API Picker").child("Ctrl+P"))
-                                                        .child(h_flex().justify_between().child("Open Settings").child("Ctrl+,"))
-                                                        .child(h_flex().justify_between().child("Next API").child("Ctrl+Tab"))
-                                                        .child(h_flex().justify_between().child("Previous API").child("Ctrl+Shift+Tab"))
-                                                        .child(h_flex().justify_between().child("Send Request").child("Ctrl+Enter"))
-                                                        .child(h_flex().justify_between().child("Rename Selected").child("Enter"))
-                                                        .child(h_flex().justify_between().child("Toggle Maximize Panel").child("Shift+Escape"))
-                                                        .child(h_flex().justify_between().child("Expand All Folders").child("Ctrl+Shift+="))
-                                                        .child(h_flex().justify_between().child("Collapse All Folders").child("Ctrl+Shift+-"))
+                                                        .children(self.shortcut_inputs.iter().map(|shortcut| {
+                                                            h_flex()
+                                                                .justify_between()
+                                                                .items_center()
+                                                                .gap_4()
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .text_sm()
+                                                                        .child(shortcut.spec.label),
+                                                                )
+                                                                .child(
+                                                                    Input::new(&shortcut.input)
+                                                                        .w(px(180.))
+                                                                        .h(px(30.)),
+                                                                )
+                                                        }))
                                                 )
                                                 .child(div().mt_6().text_lg().font_weight(gpui::FontWeight::BOLD).child("Appearance"))
                                                 .child(
@@ -958,10 +1523,9 @@ impl Render for AppView {
                                                                                     .on_click(move |_, _, cx: &mut App| {
                                                                                         if let Some(cfg) = ThemeRegistry::global(cx).themes().get(name_clone.as_str()).cloned() {
                                                                                             Theme::global_mut(cx).apply_config(&cfg);
+                                                                                            AppView::apply_user_font_settings_app(cx);
                                                                                             cx.refresh_windows();
-                                                                                            if let Err(err) = crate::storage::save_theme_name(&name_clone) {
-                                                                                                eprintln!("Failed to save theme: {}", err);
-                                                                                            }
+                                                                                            let _ = crate::storage::save_theme_name(&name_clone);
                                                                                         }
                                                                                     })
                                                                             );
@@ -969,6 +1533,33 @@ impl Render for AppView {
                                                                         menu
                                                                     })
                                                             })
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .justify_between()
+                                                                .items_center()
+                                                                .gap_4()
+                                                                .child("UI Font")
+                                                                .child(
+                                                                    Button::new("ui-font-btn")
+                                                                        .label(self.selected_font_family.clone())
+                                                                        .outline()
+                                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                                            this.open_font_picker(window, cx);
+                                                                        })),
+                                                                )
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .justify_between()
+                                                                .items_center()
+                                                                .gap_4()
+                                                                .child("UI Font Size")
+                                                                .child(
+                                                                    Input::new(&self.font_size_input)
+                                                                        .w(px(90.))
+                                                                        .h(px(30.)),
+                                                                )
                                                         )
                                                 )
                                         )

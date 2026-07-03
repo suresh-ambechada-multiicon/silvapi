@@ -1,4 +1,4 @@
-FROM debian:bookworm
+FROM debian:bullseye
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CARGO_HOME=/cargo
@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     cmake \
     clang \
-    libssl-dev \
     libfontconfig1-dev \
     libfreetype6-dev \
     libx11-dev \

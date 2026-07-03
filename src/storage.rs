@@ -123,6 +123,37 @@ pub fn save_theme_name(theme_name: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn load_setting(key: &str) -> Result<Option<String>> {
+    let path = db_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let conn = open_db(&path)?;
+    let mut stmt = conn.prepare("select value from settings where key = ?1")?;
+    let mut rows = stmt.query(params![key])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+
+    Ok(Some(row.get(0)?))
+}
+
+pub fn save_setting(key: &str, value: &str) -> Result<()> {
+    let path = db_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let conn = open_db(&path)?;
+    conn.execute(
+        "insert into settings (key, value, updated_at) values (?1, ?2, strftime('%s','now'))
+         on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 fn open_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(

@@ -3,17 +3,18 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_dir="$(cd "$repo_dir/.." && pwd)"
-target_dir="$repo_dir/target/x86_64-pc-windows-msvc/release"
+target_root="$repo_dir/.cache/target-windows"
+target_dir="$target_root/x86_64-pc-windows-msvc/release"
 dist_dir="$repo_dir/dist"
 xwin_cache_dir="$repo_dir/.cache/xwin"
 cargo_registry_dir="$repo_dir/.cache/cargo-registry"
 cargo_git_dir="$repo_dir/.cache/cargo-git"
 
-mkdir -p "$xwin_cache_dir" "$cargo_registry_dir" "$cargo_git_dir"
+mkdir -p "$xwin_cache_dir" "$cargo_registry_dir" "$cargo_git_dir" "$target_root"
 docker build -f "$repo_dir/Dockerfile.windows" -t silvapi-build:windows "$repo_dir"
 docker run --rm \
   -v "$workspace_dir:/work" \
-  -v "$repo_dir/target:/work/silvapi/target" \
+  -v "$target_root:/work/silvapi/target" \
   -v "$xwin_cache_dir:/root/.cache" \
   -v "$cargo_registry_dir:/usr/local/cargo/registry" \
   -v "$cargo_git_dir:/usr/local/cargo/git" \
@@ -36,10 +37,10 @@ docker run --rm \
     while IFS= read -r renderer_file; do
       checkout_dir="${renderer_file%/crates/gpui_windows/src/directx_renderer.rs}"
       patch_file="/work/silvapi/patches/gpui-windows-runtime-shaders.patch"
-      if git -C "$checkout_dir" apply --check "$patch_file"; then
-        git -C "$checkout_dir" apply "$patch_file"
-      elif git -C "$checkout_dir" apply --reverse --check "$patch_file"; then
+      if git -C "$checkout_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
         echo "GPUI Windows runtime shader patch already applied"
+      elif git -C "$checkout_dir" apply --check "$patch_file" >/dev/null 2>&1; then
+        git -C "$checkout_dir" apply "$patch_file"
       else
         echo "Failed to apply GPUI Windows runtime shader patch" >&2
         exit 1

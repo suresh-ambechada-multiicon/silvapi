@@ -3,11 +3,12 @@ use std::collections::HashSet;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable as _,
+    ActiveTheme, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{PopupMenu, PopupMenuItem},
+    resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement,
     spinner::Spinner,
     tab::{Tab, TabBar},
@@ -23,8 +24,9 @@ const STREAM_PREVIEW_BYTES: usize = 96 * 1024;
 const LARGE_RESPONSE_PREVIEW_BYTES: usize = 128 * 1024;
 const FORMAT_RESPONSE_LIMIT_BYTES: usize = 1024 * 1024;
 const SSE_ROW_PREVIEW_BYTES: usize = 512;
-const SSE_DETAIL_PREVIEW_BYTES: usize = 64 * 1024;
-const SSE_DETAIL_FORMAT_LIMIT_BYTES: usize = 64 * 1024;
+const SSE_MAX_EVENTS: usize = 2_000;
+const SSE_EVENT_STORE_BYTES: usize = 256 * 1024;
+const SSE_DETAIL_FORMAT_LIMIT_BYTES: usize = 256 * 1024;
 
 struct HeaderSection {
     title: &'static str,
@@ -69,6 +71,7 @@ pub struct ResponsePanel {
     soft_wrap: bool,
     response_editor_plain: bool,
     sse_detail_soft_wrap: bool,
+    sse_detail_column_layout: bool,
     headers_source_view: bool,
     collapsed_header_sections: HashSet<&'static str>,
     _subs: Vec<Subscription>,
@@ -77,6 +80,8 @@ pub struct ResponsePanel {
     focus_handle: FocusHandle,
     sse_scroll: gpui::UniformListScrollHandle,
     timeline_scroll: gpui::UniformListScrollHandle,
+    sse_detail_column_resize: Entity<ResizableState>,
+    sse_detail_row_resize: Entity<ResizableState>,
 }
 
 impl Focusable for ResponsePanel {
@@ -104,7 +109,7 @@ impl ResponsePanel {
                 .replaceable(false)
                 .placeholder("Message detail")
                 .readonly(true)
-                .soft_wrap(false)
+                .soft_wrap(true)
         });
         let headers_editor = cx.new(|cx| {
             InputState::new(window, cx)
@@ -128,7 +133,8 @@ impl ResponsePanel {
             response_text: String::new(),
             soft_wrap: true,
             response_editor_plain: false,
-            sse_detail_soft_wrap: false,
+            sse_detail_soft_wrap: true,
+            sse_detail_column_layout: false,
             headers_source_view: false,
             collapsed_header_sections: HashSet::new(),
             _subs: Vec::new(),
@@ -137,6 +143,8 @@ impl ResponsePanel {
             focus_handle,
             sse_scroll: gpui::UniformListScrollHandle::new(),
             timeline_scroll: gpui::UniformListScrollHandle::new(),
+            sse_detail_column_resize: cx.new(|_| ResizableState::default()),
+            sse_detail_row_resize: cx.new(|_| ResizableState::default()),
         };
 
         let sub = cx.subscribe_in(
@@ -284,13 +292,31 @@ impl ResponsePanel {
         });
     }
 
+    fn has_room_for_sse_side_detail(window: &Window) -> bool {
+        let logical_width = window.bounds().size.width / window.scale_factor();
+        logical_width >= px(720.)
+    }
+
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (is_loading, loading_elapsed_ms, response_summary, has_response, has_error) = {
+        let (
+            is_loading,
+            loading_elapsed_ms,
+            loading_size,
+            has_stream_body,
+            response_summary,
+            has_response,
+            has_error,
+        ) = {
             let state = self.app_state.read(cx);
+            let response = state.response.as_ref();
             (
                 state.is_loading,
                 state.loading_elapsed_ms(),
-                state.response.as_ref().map(|resp| {
+                response
+                    .map(|resp| resp.formatted_size())
+                    .unwrap_or_else(|| "0 B".to_string()),
+                response.map_or(false, |resp| !resp.body.is_empty()),
+                (!state.is_loading).then(|| response).flatten().map(|resp| {
                     (
                         resp.status,
                         resp.status_text.clone(),
@@ -300,7 +326,7 @@ impl ResponsePanel {
                         resp.is_redirect(),
                     )
                 }),
-                state.response.is_some(),
+                response.is_some(),
                 state.error.is_some(),
             )
         };
@@ -323,12 +349,13 @@ impl ResponsePanel {
                             h_flex()
                                 .gap_2()
                                 .items_center()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Sending request..."),
-                                )
+                                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                    if has_stream_body {
+                                        "Receiving response..."
+                                    } else {
+                                        "Sending request..."
+                                    },
+                                ))
                                 .when_some(loading_elapsed_ms, |el, elapsed_ms| {
                                     el.child(dot_separator(cx)).child(
                                         div()
@@ -337,6 +364,13 @@ impl ResponsePanel {
                                             .child(format_duration(elapsed_ms)),
                                     )
                                 })
+                                .child(dot_separator(cx))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().foreground)
+                                        .child(loading_size),
+                                )
                                 .child(
                                     Button::new("cancel-resp")
                                         .label("Cancel")
@@ -449,14 +483,7 @@ impl ResponsePanel {
                                                 if let Some(id) = request_id {
                                                     cx.background_executor()
                                                         .spawn(async move {
-                                                            if let Err(err) =
-                                                                crate::storage::delete_response_history(&id)
-                                                            {
-                                                                eprintln!(
-                                                                    "Failed to delete response history: {}",
-                                                                    err
-                                                                );
-                                                            }
+                                                            let _ = crate::storage::delete_response_history(&id);
                                                         })
                                                         .detach();
                                                 }
@@ -497,7 +524,16 @@ impl ResponsePanel {
                         })
                         .child(
                             Button::new("response-wrap-toggle")
-                                .label(if self.soft_wrap { "↵" } else { "↔" })
+                                .icon(if self.soft_wrap {
+                                    IconName::ArrowLeft
+                                } else {
+                                    IconName::ChevronsUpDown
+                                })
+                                .tooltip(if self.soft_wrap {
+                                    "Disable wrap"
+                                } else {
+                                    "Enable wrap"
+                                })
                                 .ghost()
                                 .xsmall()
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -527,7 +563,8 @@ impl ResponsePanel {
                     })
                     .child(
                         Button::new("response-layout-toggle")
-                            .label("⬍")
+                            .icon(IconName::PanelRightOpen)
+                            .tooltip("Toggle response layout")
                             .ghost()
                             .xsmall()
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -692,7 +729,15 @@ impl ResponsePanel {
                             cx.notify();
                         }),
                     )
-                    .child(if collapsed { "▸" } else { "▾" })
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                    )
                     .child(title),
             )
             .when(!collapsed, |el| {
@@ -750,13 +795,19 @@ impl ResponsePanel {
                     if let Some(ev) = timeline.get(idx) {
                         let selected = selected_idx == Some(idx);
 
-                        let (icon_str, color) = match ev.icon {
+                        let (icon, color) = match ev.icon {
                             crate::models::TimelineIcon::Setting => {
-                                ("⚙", cx.theme().muted_foreground)
+                                (IconName::Settings, cx.theme().muted_foreground)
                             }
-                            crate::models::TimelineIcon::Request => ("↗", cx.theme().primary),
-                            crate::models::TimelineIcon::Response => ("↙", cx.theme().primary),
-                            crate::models::TimelineIcon::Info => ("ℹ", cx.theme().muted_foreground),
+                            crate::models::TimelineIcon::Request => {
+                                (IconName::ArrowUp, cx.theme().primary)
+                            }
+                            crate::models::TimelineIcon::Response => {
+                                (IconName::ArrowDown, cx.theme().primary)
+                            }
+                            crate::models::TimelineIcon::Info => {
+                                (IconName::Info, cx.theme().muted_foreground)
+                            }
                         };
 
                         let bg_color = if selected {
@@ -798,7 +849,7 @@ impl ResponsePanel {
                                     h_flex()
                                         .gap_3()
                                         .items_start()
-                                        .child(div().text_color(color).text_sm().child(icon_str))
+                                        .child(Icon::new(icon).small().text_color(color))
                                         .child(
                                             div()
                                                 .text_sm()
@@ -910,17 +961,15 @@ impl ResponsePanel {
                                                 .child(ev.timestamp.clone()),
                                         )
                                         .child(
-                                            div()
-                                                .id("close-detail")
-                                                .cursor_pointer()
-                                                .child("✕")
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _, _, cx| {
-                                                        this.selected_timeline_event = None;
-                                                        cx.notify();
-                                                    }),
-                                                ),
+                                            Button::new("close-detail")
+                                                .icon(IconName::Close)
+                                                .tooltip("Close detail")
+                                                .ghost()
+                                                .xsmall()
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.selected_timeline_event = None;
+                                                    cx.notify();
+                                                })),
                                         ),
                                 ),
                         )
@@ -947,6 +996,9 @@ impl ResponsePanel {
         let text = self.response_text.clone();
         let mut events = Vec::new();
         for block in text.split("\n\n") {
+            if events.len() >= SSE_MAX_EVENTS {
+                break;
+            }
             if block.is_empty() {
                 continue;
             }
@@ -957,9 +1009,9 @@ impl ResponsePanel {
                     event_type = rest;
                 } else if let Some(rest) = line.strip_prefix("data: ") {
                     if !data.is_empty() {
-                        data.push('\n');
+                        append_sse_detail_text(&mut data, "\n");
                     }
-                    data.push_str(rest);
+                    append_sse_detail_text(&mut data, rest);
                 }
             }
             if !data.is_empty() {
@@ -1055,7 +1107,7 @@ impl ResponsePanel {
         .track_scroll(&self.sse_scroll)
         .size_full();
 
-        let mut container = v_flex()
+        let container = v_flex()
             .size_full()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
@@ -1089,53 +1141,82 @@ impl ResponsePanel {
             .child(list);
 
         if let Some(data) = selected_event_data {
-            let detail_data = compact_preview_text(&data, SSE_DETAIL_PREVIEW_BYTES);
-            let parsed_json = if data.len() <= SSE_DETAIL_FORMAT_LIMIT_BYTES {
-                serde_json::from_str::<serde_json::Value>(&data).ok()
-            } else {
-                None
-            };
-            let pretty_data = if let Some(parsed) = parsed_json {
-                serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| detail_data.clone())
-            } else {
-                detail_data
-            };
-
+            let allow_column_detail =
+                self.sse_detail_column_layout && Self::has_room_for_sse_side_detail(window);
+            let detail_text = format_sse_detail_text(&data);
             self.sse_detail_editor.update(cx, |state, cx| {
-                if state.value() != pretty_data {
-                    state.set_value(pretty_data.clone(), window, cx);
+                if state.value() != detail_text {
+                    *state = InputState::new(window, cx)
+                        .multi_line(true)
+                        .searchable(true)
+                        .replaceable(false)
+                        .placeholder("Message detail")
+                        .readonly(true)
+                        .soft_wrap(self.sse_detail_soft_wrap)
+                        .code_editor("json");
+                    state.set_value(detail_text, window, cx);
                 }
             });
-
-            let copy_sse_detail = pretty_data.clone();
             let detail_view = v_flex()
-                .h(px(300.))
-                .w_full()
+                .size_full()
                 .bg(cx.theme().background)
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .p_3()
                 .child(
                     h_flex()
+                        .h(px(44.))
+                        .px_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
                         .justify_between()
                         .w_full()
                         .items_center()
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .text_lg()
                                 .child("Message Received"),
                         )
                         .child(
                             h_flex()
+                                .flex_none()
                                 .gap_2()
                                 .items_center()
                                 .child(
-                                    Button::new("sse-detail-wrap-toggle")
-                                        .label(if self.sse_detail_soft_wrap {
-                                            "↵"
+                                    Button::new("sse-detail-layout-toggle")
+                                        .icon(if allow_column_detail {
+                                            IconName::PanelBottomOpen
                                         } else {
-                                            "↔"
+                                            IconName::PanelRightOpen
+                                        })
+                                        .tooltip(if allow_column_detail {
+                                            "Stack message below"
+                                        } else {
+                                            "Show message beside list"
+                                        })
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let wide_enough =
+                                                Self::has_room_for_sse_side_detail(window);
+                                            this.sse_detail_column_layout =
+                                                wide_enough && !this.sse_detail_column_layout;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("sse-detail-wrap-toggle")
+                                        .icon(if self.sse_detail_soft_wrap {
+                                            IconName::ArrowLeft
+                                        } else {
+                                            IconName::ChevronsUpDown
+                                        })
+                                        .tooltip(if self.sse_detail_soft_wrap {
+                                            "Disable wrap"
+                                        } else {
+                                            "Enable wrap"
                                         })
                                         .ghost()
                                         .xsmall()
@@ -1151,39 +1232,82 @@ impl ResponsePanel {
                                                     .replaceable(false)
                                                     .placeholder("Message detail")
                                                     .readonly(true)
-                                                    .soft_wrap(soft_wrap);
+                                                    .soft_wrap(soft_wrap)
+                                                    .code_editor("json");
                                                 state.set_value(text, window, cx);
                                             });
                                             cx.notify();
                                         })),
                                 )
                                 .child(
-                                    div()
-                                        .id("close-sse-detail")
-                                        .cursor_pointer()
-                                        .child("✕")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.selected_sse_event = None;
-                                                cx.notify();
-                                            }),
-                                        ),
+                                    Button::new("close-sse-detail")
+                                        .icon(IconName::Close)
+                                        .tooltip("Close message")
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.selected_sse_event = None;
+                                            cx.notify();
+                                        })),
                                 ),
                         ),
                 )
                 .child(
                     div()
-                        .mt_3()
-                        .size_full()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .p_3()
                         .id("sse-detail-scroll")
                         .child(Input::new(&self.sse_detail_editor).h_full().w_full()),
                 );
 
-            container = container.child(detail_view);
+            if allow_column_detail {
+                return h_flex()
+                    .size_full()
+                    .track_focus(&self.focus_handle)
+                    .child(
+                        h_resizable("sse-detail-column-split")
+                            .with_state(&self.sse_detail_column_resize)
+                            .child(
+                                resizable_panel()
+                                    .size(px(440.))
+                                    .size_range(px(220.)..px(1400.))
+                                    .child(container),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size(px(420.))
+                                    .size_range(px(280.)..px(900.))
+                                    .child(detail_view),
+                            ),
+                    )
+                    .into_any_element();
+            } else {
+                return div()
+                    .size_full()
+                    .track_focus(&self.focus_handle)
+                    .child(
+                        v_resizable("sse-detail-row-split")
+                            .with_state(&self.sse_detail_row_resize)
+                            .child(
+                                resizable_panel()
+                                    .size(px(440.))
+                                    .size_range(px(160.)..px(1200.))
+                                    .child(container),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size(px(320.))
+                                    .size_range(px(180.)..px(800.))
+                                    .child(detail_view),
+                            ),
+                    )
+                    .into_any_element();
+            }
         }
 
-        container
+        container.into_any_element()
     }
 
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
@@ -1281,7 +1405,14 @@ impl Render for ResponsePanel {
                                         .selectable(true),
                                     ),
                             )
-                        } else if self.app_state.read(cx).is_loading {
+                        } else if {
+                            let state = self.app_state.read(cx);
+                            state.is_loading
+                                && state
+                                    .response
+                                    .as_ref()
+                                    .map_or(true, |resp| resp.body.is_empty())
+                        } {
                             el.child(self.render_loading_body(cx))
                         } else {
                             let is_sse =
@@ -1506,25 +1637,6 @@ fn response_preview_text(body: &str, is_loading: bool) -> String {
     }
 }
 
-fn compact_preview_text(body: &str, limit: usize) -> String {
-    if body.len() <= limit {
-        return body.to_string();
-    }
-
-    let half = limit / 2;
-    let head = head_on_char_boundary(body, half);
-    let tail = tail_on_char_boundary(body, half);
-    format!(
-        "[Large message: showing first {} and last {} of {} bytes]\n\n{}\n\n... omitted {} bytes ...\n\n{}",
-        head.len(),
-        tail.len(),
-        body.len(),
-        head,
-        body.len().saturating_sub(head.len() + tail.len()),
-        tail
-    )
-}
-
 fn head_on_char_boundary(value: &str, max_bytes: usize) -> &str {
     if value.len() <= max_bytes {
         return value;
@@ -1555,6 +1667,25 @@ fn single_line_preview(value: &str, max_bytes: usize) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+fn append_sse_detail_text(out: &mut String, value: &str) {
+    if out.len() >= SSE_EVENT_STORE_BYTES {
+        return;
+    }
+    let remaining = SSE_EVENT_STORE_BYTES - out.len();
+    if value.len() <= remaining {
+        out.push_str(value);
+        return;
+    }
+    out.push_str(head_on_char_boundary(value, remaining));
+}
+
+fn format_sse_detail_text(data: &str) -> String {
+    if data.len() <= SSE_DETAIL_FORMAT_LIMIT_BYTES {
+        return try_format_json(data);
+    }
+    data.to_string()
 }
 
 fn try_format_json(body: &str) -> String {

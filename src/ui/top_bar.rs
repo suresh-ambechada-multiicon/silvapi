@@ -1,6 +1,6 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable as _, WindowExt as _,
+    ActiveTheme, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -159,7 +159,8 @@ impl Render for VariablesDialog {
                     .gap_2()
                     .child(
                         Button::new("add-var-btn")
-                            .label("+ Add")
+                            .icon(IconName::Plus)
+                            .label("Add")
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.add_row("", "", window, cx);
@@ -188,7 +189,6 @@ impl Render for VariablesDialog {
 
 impl Render for TopBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let workspace_name = self.app_state.read(cx).workspace.name.clone();
         let app_state = self.app_state.clone();
 
         h_flex()
@@ -205,16 +205,6 @@ impl Render for TopBar {
                     .text_sm()
                     .text_color(cx.theme().foreground)
                     .child("Silvapi"),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(cx.theme().secondary)
-                    .text_color(cx.theme().secondary_foreground)
-                    .child(workspace_name),
             )
             .child(div().flex_1())
             .child(
@@ -410,18 +400,13 @@ impl Render for TopBar {
             )
             .child(
                 Button::new("settings-btn")
-                    .label("⚙ Settings")
+                    .icon(IconName::Settings)
+                    .label("Settings")
                     .ghost()
                     .small()
                     .on_click(cx.listener(|_this, _, window, cx| {
                         window.dispatch_action(Box::new(crate::ui::actions::OpenSettings), cx);
                     })),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Ctrl+K: Theme"),
             )
     }
 }

@@ -59,15 +59,13 @@ fn init_theme(cx: &mut App) {
     for file in ThemeAssets::iter() {
         if let Some(content) = ThemeAssets::get(&file) {
             if let Ok(json_str) = std::str::from_utf8(content.data.as_ref()) {
-                if let Err(e) = ThemeRegistry::global_mut(cx).load_themes_from_str(json_str) {
-                    eprintln!("Failed to load embedded theme {}: {}", file, e);
-                }
+                let _ = ThemeRegistry::global_mut(cx).load_themes_from_str(json_str);
             }
         }
     }
 
     if themes_dir.exists() {
-        if let Err(err) = ThemeRegistry::watch_dir(themes_dir, cx, {
+        let _ = ThemeRegistry::watch_dir(themes_dir, cx, {
             let theme_name = theme_name.clone();
             move |cx| {
                 for file in ThemeAssets::iter() {
@@ -79,9 +77,7 @@ fn init_theme(cx: &mut App) {
                 }
                 apply_theme(&theme_name, cx);
             }
-        }) {
-            eprintln!("Failed to watch themes directory: {}", err);
-        }
+        });
     }
     apply_theme(&theme_name, cx);
 }

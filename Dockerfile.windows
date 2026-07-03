@@ -1,0 +1,44 @@
+FROM rust:bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    clang \
+    cmake \
+    curl \
+    git \
+    lld \
+    llvm \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    link_tool() { \
+        name="$1"; \
+        shift; \
+        if command -v "$name" >/dev/null 2>&1; then \
+            return 0; \
+        fi; \
+        for tool in "$@"; do \
+            if command -v "$tool" >/dev/null 2>&1; then \
+                ln -sf "$(command -v "$tool")" "/usr/local/bin/$name"; \
+                return 0; \
+            fi; \
+        done; \
+        echo "missing $name" >&2; \
+        return 1; \
+    }; \
+    link_tool clang-cl clang-cl-19 clang-cl-18 clang-cl-17 clang-cl-16 clang-cl-15 clang-cl-14 clang; \
+    link_tool lld-link lld-link-19 lld-link-18 lld-link-17 lld-link-16 lld-link-15 lld-link-14 lld; \
+    link_tool llvm-lib llvm-lib-19 llvm-lib-18 llvm-lib-17 llvm-lib-16 llvm-lib-15 llvm-lib-14 llvm-ar; \
+    command -v clang-cl; \
+    command -v lld-link; \
+    command -v llvm-lib
+
+RUN rustup target add x86_64-pc-windows-msvc
+RUN cargo install cargo-xwin --locked
+
+WORKDIR /work/silvapi
+
+CMD ["cargo", "xwin", "build", "--release", "--target", "x86_64-pc-windows-msvc"]

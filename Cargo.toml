@@ -1,0 +1,38 @@
+[package]
+name = "silvapi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "wayland", "x11"] }
+gpui-component = { path = "../gpui-component/crates/ui" }
+gpui-component-assets = { path = "../gpui-component/crates/assets" }
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.11", features = ["blocking", "json", "native-tls"], default-features = false }
+uuid = { version = "1", features = ["v4"] }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_yaml = "0.9"
+chrono = "0.4.45"
+scraper = "0.27.0"
+ego-tree = "0.11.0"
+rand = "0.10.1"
+rust-embed = "8.11.0"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+
+[profile.release-fast]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,37 @@
+FROM debian:bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CARGO_HOME=/cargo
+ENV RUSTUP_HOME=/rustup
+ENV PATH=/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    pkg-config \
+    cmake \
+    clang \
+    libssl-dev \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    libx11-dev \
+    libxkbcommon-dev \
+    libxkbcommon-x11-dev \
+    libxcb1-dev \
+    libxcb-render0-dev \
+    libxcb-shape0-dev \
+    libxcb-xfixes0-dev \
+    libxcb-xkb-dev \
+    libwayland-dev \
+    libasound2-dev \
+    libudev-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable
+
+WORKDIR /work/silvapi
+
+CMD ["cargo", "build", "--release"]

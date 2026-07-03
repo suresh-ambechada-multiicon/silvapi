@@ -1,0 +1,44 @@
+# Rust build output
+/target/
+
+# Local caches and generated indexes
+/.cache/
+/.codegraph/
+/.claude/
+/.agents/
+/.codex/
+
+# Release/package artifacts generated locally
+/dist/
+/silvapi
+/silvapi-*
+/*.exe
+/*.msi
+/*.dmg
+/*.AppImage
+/*.deb
+/*.rpm
+
+# Logs and crash dumps
+*.log
+*.pid
+*.stackdump
+core
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.temp

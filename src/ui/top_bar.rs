@@ -29,7 +29,7 @@ struct VariablesDialog {
 }
 
 impl TopBar {
-    pub fn new(app_state: Entity<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app_state: Entity<AppState>, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
             app_state,
             _subs: vec![],
@@ -99,7 +99,7 @@ impl VariablesDialog {
 }
 
 impl Render for VariablesDialog {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
 
         rows.push(
@@ -224,7 +224,7 @@ impl Render for TopBar {
                                 prompt: Some("Select OpenAPI spec (JSON or YAML)".into()),
                             });
 
-                            cx.spawn(async move |_, mut cx| match rx.await {
+                            cx.spawn(async move |_, cx| match rx.await {
                                 Ok(Ok(Some(paths))) => {
                                     if let Some(path) = paths.first() {
                                         crate::ui::top_bar::handle_openapi_file(
@@ -304,7 +304,7 @@ impl Render for TopBar {
                                 prompt: Some("Select Postman Collection JSON".into()),
                             });
 
-                            cx.spawn(async move |_, mut cx| match rx.await {
+                            cx.spawn(async move |_, cx| match rx.await {
                                 Ok(Ok(Some(paths))) => {
                                     if let Some(path) = paths.first() {
                                         crate::ui::top_bar::handle_postman_file(

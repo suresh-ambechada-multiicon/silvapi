@@ -16,6 +16,7 @@ actions!(
         PrevApi,
         ToggleMaximize,
         FocusActiveRequest,
+        FocusUrl,
         FocusCollectionPanel,
         FocusRequestPanel,
         FocusResponsePanel,

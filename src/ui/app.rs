@@ -5,7 +5,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{PopupMenu, PopupMenuItem},
+    menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     v_flex,
 };
@@ -15,7 +15,7 @@ use crate::state::{AppEvent, AppState};
 use super::{
     actions::{
         ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
-        FocusResponsePanel, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
+        FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
         ThemePicker, ToggleMaximize,
     },
     collection_panel::CollectionPanel,
@@ -43,6 +43,7 @@ pub struct AppView {
     api_picker_open: bool,
     api_search: Entity<InputState>,
     api_list: Vec<(String, String)>,
+    api_list_query: String,
     api_list_dirty: bool,
     api_cursor: usize,
     settings_open: bool,
@@ -56,7 +57,7 @@ pub struct AppView {
     font_cursor: usize,
     font_scroll: gpui::UniformListScrollHandle,
     font_size_input: Entity<InputState>,
-    api_scroll: ScrollHandle,
+    api_scroll: gpui::UniformListScrollHandle,
     save_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
     maximized_panel: MaximizedPanel,
@@ -145,6 +146,11 @@ impl AppView {
                 default_key: "ctrl-shift-f",
             },
             ShortcutSpec {
+                id: "focus_url",
+                label: "Focus URL",
+                default_key: "ctrl-l",
+            },
+            ShortcutSpec {
                 id: "focus_collection_panel",
                 label: "Focus Request List",
                 default_key: "alt-1",
@@ -162,10 +168,14 @@ impl AppView {
         ]
     }
 
-    fn system_font_families() -> Vec<String> {
-        let mut fonts = font_kit::source::SystemSource::new()
-            .all_families()
-            .unwrap_or_default();
+    fn system_font_families(cx: &App) -> Vec<String> {
+        // Enumerate via gpui's own text system rather than font-kit: these are
+        // exactly the family names `.font_family()` can resolve. On Linux the
+        // two agree (fontconfig), but on Windows gpui's DirectWrite backend has
+        // its own name set — font-kit names it can't match silently fall back,
+        // so a picked font would appear to do nothing.
+        let mut fonts = cx.text_system().all_font_names();
+        fonts.retain(|font| !font.trim().is_empty() && font != ".SystemUIFont");
         fonts.sort_by_key(|font| font.to_lowercase());
         fonts.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
@@ -211,6 +221,7 @@ impl AppView {
             "focus_active_request" => {
                 cx.bind_keys([KeyBinding::new(key, FocusActiveRequest, None)])
             }
+            "focus_url" => cx.bind_keys([KeyBinding::new(key, FocusUrl, None)]),
             "focus_collection_panel" => {
                 cx.bind_keys([KeyBinding::new(key, FocusCollectionPanel, None)])
             }
@@ -339,21 +350,22 @@ impl AppView {
                         let _ = result;
                     }));
                 }
-                if matches!(ev, AppEvent::WorkspaceChanged)
-                    || (this.api_picker_open && matches!(ev, AppEvent::SaveNeeded))
-                {
+                if matches!(ev, AppEvent::WorkspaceChanged) {
                     this.api_list_dirty = true;
-                    let selected = this
-                        .api_list
-                        .get(this.api_cursor)
-                        .map(|(id, _)| id.clone())
-                        .or_else(|| app_state.read(cx).active_request_id.clone());
-                    this.rebuild_api_list(cx);
-                    if let Some(selected) = selected {
-                        if let Some(idx) = this.api_list.iter().position(|(id, _)| *id == selected)
-                        {
-                            this.api_cursor = idx;
-                            this.api_scroll.scroll_to_item(idx);
+                    if this.api_picker_open {
+                        let selected = this
+                            .api_list
+                            .get(this.api_cursor)
+                            .map(|(id, _)| id.clone())
+                            .or_else(|| app_state.read(cx).active_request_id.clone());
+                        this.rebuild_api_list(cx);
+                        if let Some(selected) = selected {
+                            if let Some(idx) =
+                                this.api_list.iter().position(|(id, _)| *id == selected)
+                            {
+                                this.api_cursor = idx;
+                                this.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
+                            }
                         }
                     }
                 }
@@ -416,7 +428,7 @@ impl AppView {
         );
 
         Self::apply_user_font_settings(cx);
-        let available_fonts = Self::system_font_families();
+        let available_fonts = Self::system_font_families(cx);
         let selected_font_family = crate::storage::load_setting("ui.font_family")
             .ok()
             .flatten()
@@ -489,6 +501,7 @@ impl AppView {
             api_picker_open: false,
             api_search,
             api_list: Vec::new(),
+            api_list_query: String::new(),
             api_list_dirty: true,
             api_cursor: 0,
             settings_open: false,
@@ -502,7 +515,7 @@ impl AppView {
             font_cursor: 0,
             font_scroll: gpui::UniformListScrollHandle::new(),
             font_size_input,
-            api_scroll: ScrollHandle::new(),
+            api_scroll: gpui::UniformListScrollHandle::new(),
             save_task: None,
             _subs: {
                 let mut subs = vec![
@@ -522,7 +535,8 @@ impl AppView {
     }
 
     fn update_api_list(&mut self, cx: &mut Context<Self>) {
-        self.rebuild_api_list(cx);
+        let query = self.api_search.read(cx).value().to_lowercase();
+        self.ensure_api_list_for_query(&query, cx);
         cx.notify();
     }
 
@@ -553,7 +567,16 @@ impl AppView {
 
     fn rebuild_api_list(&mut self, cx: &App) {
         let query = self.api_search.read(cx).value().to_lowercase();
+        self.rebuild_api_list_for_query(query, cx);
+    }
 
+    fn ensure_api_list_for_query(&mut self, query: &str, cx: &App) {
+        if self.api_list_dirty || self.api_list_query != query {
+            self.rebuild_api_list_for_query(query.to_string(), cx);
+        }
+    }
+
+    fn rebuild_api_list_for_query(&mut self, query: String, cx: &App) {
         let mut out = Vec::new();
         let state = self.app_state.read(cx);
         for col in &state.workspace.collections {
@@ -576,11 +599,64 @@ impl AppView {
         }
 
         self.api_list = out;
+        self.api_list_query = query;
         self.api_list_dirty = false;
         self.api_cursor = 0;
         if !self.api_list.is_empty() {
-            self.api_scroll.scroll_to_item(0);
+            self.api_scroll.scroll_to_item(0, ScrollStrategy::Nearest);
         }
+    }
+
+    fn render_api_picker_rows(
+        &mut self,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for idx in range {
+            let Some((id, name)) = self.api_list.get(idx).cloned() else {
+                continue;
+            };
+            let is_selected = idx == self.api_cursor;
+            let bg = if is_selected {
+                cx.theme().primary.opacity(0.1)
+            } else {
+                gpui::transparent_black()
+            };
+            let text_color = if is_selected {
+                cx.theme().primary
+            } else {
+                cx.theme().foreground
+            };
+
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("api-picker-row-{}", idx)))
+                    .w_full()
+                    .h(px(48.))
+                    .px_4()
+                    .py_2()
+                    .bg(bg)
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.api_cursor = idx;
+                            this.select_api_from_picker(id.clone(), window, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(text_color)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 
     fn collect_reqs(
@@ -622,7 +698,9 @@ impl AppView {
                 cx.emit(AppEvent::RequestSelected);
             }
         });
-        window.dispatch_action(Box::new(FocusActiveRequest), cx);
+        self.collection_panel.update(cx, |panel, cx| {
+            panel.reveal_active_request(true, window, cx);
+        });
         cx.notify();
     }
 
@@ -667,12 +745,12 @@ impl AppView {
     fn open_api_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.api_search
             .update(cx, |s, cx| s.set_value("", window, cx));
-        self.update_api_list(cx);
+        self.ensure_api_list_for_query("", cx);
 
         if let Some(active_id) = &self.app_state.read(cx).active_request_id {
             if let Some(idx) = self.api_list.iter().position(|(id, _)| id == active_id) {
                 self.api_cursor = idx;
-                self.api_scroll.scroll_to_item(idx);
+                self.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
             }
         }
 
@@ -682,6 +760,45 @@ impl AppView {
         let fh = self.api_search.read(cx).focus_handle(cx);
         cx.defer_in(window, move |_, window, cx| {
             fh.focus(window, cx);
+        });
+    }
+
+    fn select_adjacent_api(&mut self, step: isize, cx: &mut Context<Self>) {
+        self.ensure_api_list_for_query("", cx);
+        let len = self.api_list.len();
+        if len == 0 {
+            return;
+        }
+
+        let current_id = self.app_state.read(cx).active_request_id.clone();
+        let current_idx = current_id
+            .as_ref()
+            .and_then(|id| {
+                if self
+                    .api_list
+                    .get(self.api_cursor)
+                    .map(|(rid, _)| rid == id)
+                    .unwrap_or(false)
+                {
+                    Some(self.api_cursor)
+                } else {
+                    self.api_list.iter().position(|(rid, _)| rid == id)
+                }
+            })
+            .unwrap_or(0);
+
+        let target_idx = if step.is_negative() {
+            (current_idx + len - 1) % len
+        } else {
+            (current_idx + 1) % len
+        };
+        let target_id = self.api_list[target_idx].0.clone();
+        self.api_cursor = target_idx;
+
+        self.app_state.update(cx, |state, cx| {
+            if state.select_request(&target_id) {
+                cx.emit(AppEvent::RequestSelected);
+            }
         });
     }
 
@@ -839,38 +956,10 @@ impl Render for AppView {
                 this.close_settings(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NextApi, _window, cx| {
-                let mut out = Vec::new();
-                for col in &this.app_state.read(cx).workspace.collections {
-                    Self::collect_reqs(&col.items, &col.name, &mut out);
-                }
-                if !out.is_empty() {
-                    let current_id = this.app_state.read(cx).active_request_id.clone();
-                    let current_idx = current_id.and_then(|id| out.iter().position(|(rid, _)| *rid == id)).unwrap_or(0);
-                    let new_idx = (current_idx + 1) % out.len();
-                    let target_id = out[new_idx].0.clone();
-                    this.app_state.update(cx, |st, cx| {
-                        if st.select_request(&target_id) {
-                            cx.emit(AppEvent::RequestSelected);
-                        }
-                    });
-                }
+                this.select_adjacent_api(1, cx);
             }))
             .on_action(cx.listener(|this, _: &PrevApi, _window, cx| {
-                let mut out = Vec::new();
-                for col in &this.app_state.read(cx).workspace.collections {
-                    Self::collect_reqs(&col.items, &col.name, &mut out);
-                }
-                if !out.is_empty() {
-                    let current_id = this.app_state.read(cx).active_request_id.clone();
-                    let current_idx = current_id.and_then(|id| out.iter().position(|(rid, _)| *rid == id)).unwrap_or(0);
-                    let new_idx = if current_idx == 0 { out.len() - 1 } else { current_idx - 1 };
-                    let target_id = out[new_idx].0.clone();
-                    this.app_state.update(cx, |st, cx| {
-                        if st.select_request(&target_id) {
-                            cx.emit(AppEvent::RequestSelected);
-                        }
-                    });
-                }
+                this.select_adjacent_api(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &ApiPicker, window, cx| {
                 if this.api_picker_open {
@@ -900,6 +989,13 @@ impl Render for AppView {
                 let fh = this.response_panel.read(cx).focus_handle(cx);
                 cx.defer_in(window, move |_, window, cx| {
                     fh.focus(window, cx);
+                });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusUrl, window, cx| {
+                this.maximized_panel = MaximizedPanel::None;
+                this.request_panel.update(cx, |panel, cx| {
+                    panel.focus_url(window, cx);
                 });
                 cx.notify();
             }))
@@ -1143,12 +1239,18 @@ impl Render for AppView {
                                                 } else {
                                                     this.api_cursor = n - 1;
                                                 }
-                                                this.api_scroll.scroll_to_item(this.api_cursor);
+                                                this.api_scroll.scroll_to_item(
+                                                    this.api_cursor,
+                                                    ScrollStrategy::Nearest,
+                                                );
                                                 cx.notify();
                                             }
                                             "down" => {
                                                 this.api_cursor = (this.api_cursor + 1) % n;
-                                                this.api_scroll.scroll_to_item(this.api_cursor);
+                                                this.api_scroll.scroll_to_item(
+                                                    this.api_cursor,
+                                                    ScrollStrategy::Nearest,
+                                                );
                                                 cx.notify();
                                             }
                                             "escape" => {
@@ -1172,9 +1274,6 @@ impl Render for AppView {
                                         .h(px(list_height))
                                         .max_h(px(458.))
                                         .min_h_0()
-                                        .overflow_y_scroll()
-                                        .track_scroll(&self.api_scroll)
-                                        .py_1()
                                         .when(self.api_list.is_empty(), |el| {
                                             el.child(
                                                 div()
@@ -1187,50 +1286,22 @@ impl Render for AppView {
                                             )
                                         })
                                         .when(!self.api_list.is_empty(), |el| {
-                                            el.children(self.api_list.iter().enumerate().map(
-                                                |(idx, (id, name))| {
-                                                    let is_selected = idx == self.api_cursor;
-                                                    let bg = if is_selected {
-                                                        cx.theme().primary.opacity(0.1)
-                                                    } else {
-                                                        gpui::transparent_black()
-                                                    };
-                                                    let text_color = if is_selected {
-                                                        cx.theme().primary
-                                                    } else {
-                                                        cx.theme().foreground
-                                                    };
-                                                    let req_id = id.clone();
-                                                    div()
-                                                        .id(SharedString::from(format!(
-                                                            "api-picker-row-{}",
-                                                            idx
-                                                        )))
-                                                        .w_full()
-                                                        .px_4()
-                                                        .py_2()
-                                                        .bg(bg)
-                                                        .cursor_pointer()
-                                                        .on_mouse_down(
-                                                            gpui::MouseButton::Left,
-                                                            cx.listener(
-                                                                move |this, _, window, cx| {
-                                                                    this.select_api_from_picker(
-                                                                        req_id.clone(),
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_sm()
-                                                                .text_color(text_color)
-                                                                .child(name.clone()),
-                                                        )
-                                                },
-                                            ))
+                                            el.child(
+                                                uniform_list(
+                                                    "api-picker-list",
+                                                    self.api_list.len(),
+                                                    cx.processor(
+                                                        |this: &mut AppView,
+                                                         range: std::ops::Range<usize>,
+                                                         _window,
+                                                         cx| {
+                                                            this.render_api_picker_rows(range, cx)
+                                                        },
+                                                    ),
+                                                )
+                                                .track_scroll(&self.api_scroll)
+                                                .size_full(),
+                                            )
                                         }),
                                 ),
                         ),
@@ -1566,6 +1637,13 @@ impl Render for AppView {
                                 )
                         )
                 )
+            })
+            // ── Folder settings modal (full-app centered overlay) ──────────
+            .when(self.collection_panel.read(cx).folder_settings_open(), |el| {
+                let modal = self
+                    .collection_panel
+                    .update(cx, |panel, cx| panel.folder_settings_modal(window, cx));
+                el.child(modal)
             })
             .children(dialog_layer)
             .children(notification_layer)

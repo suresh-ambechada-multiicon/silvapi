@@ -147,24 +147,32 @@ fn parse_body(body_val: &Value) -> RequestBody {
             } else {
                 BodyType::Raw
             };
-            RequestBody { body_type, content }
+            RequestBody {
+                body_type,
+                content,
+                urlencoded: Vec::new(),
+                form_data: Vec::new(),
+            }
         }
         "urlencoded" => {
-            let pairs: Vec<String> = body_val["urlencoded"]
+            let pairs: Vec<KeyValue> = body_val["urlencoded"]
                 .as_array()
                 .unwrap_or(&vec![])
                 .iter()
                 .map(|p| {
-                    format!(
-                        "{}={}",
+                    let mut kv = KeyValue::new(
                         p["key"].as_str().unwrap_or(""),
-                        p["value"].as_str().unwrap_or("")
-                    )
+                        p["value"].as_str().unwrap_or(""),
+                    );
+                    kv.enabled = !p["disabled"].as_bool().unwrap_or(false);
+                    kv
                 })
                 .collect();
             RequestBody {
                 body_type: BodyType::UrlEncoded,
-                content: pairs.join("&"),
+                content: crate::http::build_urlencoded_body(&pairs),
+                urlencoded: pairs,
+                form_data: Vec::new(),
             }
         }
         _ => RequestBody::default(),

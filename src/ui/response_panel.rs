@@ -7,7 +7,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{PopupMenu, PopupMenuItem},
+    menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement,
     spinner::Spinner,
@@ -18,7 +18,6 @@ use gpui_component::{
 
 use crate::state::{AppEvent, AppState};
 
-use super::html_preview::{parse_html, render_node};
 
 const STREAM_PREVIEW_BYTES: usize = 96 * 1024;
 const LARGE_RESPONSE_PREVIEW_BYTES: usize = 128 * 1024;
@@ -27,6 +26,10 @@ const SSE_ROW_PREVIEW_BYTES: usize = 512;
 const SSE_MAX_EVENTS: usize = 2_000;
 const SSE_EVENT_STORE_BYTES: usize = 256 * 1024;
 const SSE_DETAIL_FORMAT_LIMIT_BYTES: usize = 256 * 1024;
+
+fn single_line(value: impl AsRef<str>) -> String {
+    value.as_ref().replace(['\r', '\n'], " ")
+}
 
 struct HeaderSection {
     title: &'static str,
@@ -99,7 +102,6 @@ impl ResponsePanel {
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
-                .readonly(true)
                 .soft_wrap(true)
         });
         let sse_detail_editor = cx.new(|cx| {
@@ -108,7 +110,6 @@ impl ResponsePanel {
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Message detail")
-                .readonly(true)
                 .soft_wrap(true)
         });
         let headers_editor = cx.new(|cx| {
@@ -118,7 +119,6 @@ impl ResponsePanel {
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Headers")
-                .readonly(true)
                 .soft_wrap(false)
         });
 
@@ -147,7 +147,7 @@ impl ResponsePanel {
             sse_detail_row_resize: cx.new(|_| ResizableState::default()),
         };
 
-        let sub = cx.subscribe_in(
+        let app_sub = cx.subscribe_in(
             &app_state,
             window,
             move |this: &mut ResponsePanel, app_state, ev: &AppEvent, window, cx| {
@@ -156,53 +156,19 @@ impl ResponsePanel {
                 }
 
                 if matches!(ev, AppEvent::ResponseReceived | AppEvent::RequestSelected) {
-                    let (is_loading, body_len, preview_text, is_html, has_preview) = {
+                    let (is_loading, body_len, preview_text) = {
                         let state = app_state.read(cx);
                         let body = state
                             .response
                             .as_ref()
                             .map(|r| r.body.as_str())
                             .unwrap_or("");
-                        let is_html = state.response.as_ref().map_or(false, |r| {
-                            r.headers.iter().any(|(k, v)| {
-                                k.to_lowercase() == "content-type" && v.contains("text/html")
-                            })
-                        });
                         (
                             state.is_loading,
                             body.len(),
                             response_preview_text(body, state.is_loading),
-                            is_html,
-                            state.preview_nodes.is_some(),
                         )
                     };
-                    let app_state_clone = app_state.clone();
-
-                    if is_html
-                        && !is_loading
-                        && !has_preview
-                        && body_len <= FORMAT_RESPONSE_LIMIT_BYTES
-                    {
-                        let text = app_state
-                            .read(cx)
-                            .response
-                            .as_ref()
-                            .map(|r| r.body.clone())
-                            .unwrap_or_default();
-                        cx.spawn(async move |_, mut cx| {
-                            let nodes = cx
-                                .background_executor()
-                                .spawn(async move { parse_html(&text) })
-                                .await;
-                            let _ = cx.update(|cx| {
-                                app_state_clone.update(cx, |state, cx| {
-                                    state.preview_nodes = Some(nodes);
-                                    cx.emit(AppEvent::PreviewParsed);
-                                });
-                            });
-                        })
-                        .detach();
-                    }
 
                     if !is_loading {
                         if body_len <= FORMAT_RESPONSE_LIMIT_BYTES {
@@ -214,7 +180,7 @@ impl ResponsePanel {
                                 .map(|r| r.body.clone())
                                 .unwrap_or_default();
                             let app_state_clone = app_state.clone();
-                            cx.spawn(async move |_, mut cx| {
+                            cx.spawn(async move |_, cx| {
                                 let formatted = cx
                                     .background_executor()
                                     .spawn(async move { try_format_json(&text) })
@@ -256,13 +222,94 @@ impl ResponsePanel {
                     }
                 }
 
-                if matches!(ev, AppEvent::PreviewParsed) {
-                    cx.notify();
+            },
+        );
+        let response_editor_sub = cx.subscribe_in(
+            &response_editor,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let editor = this.response_editor.clone();
+                    let text = this.response_text.clone();
+                    cx.defer_in(window, move |_, window, cx| {
+                        editor.update(cx, |state, cx| state.set_value(text, window, cx));
+                    });
                 }
             },
         );
-        this._subs = vec![sub];
+        let headers_editor = this.headers_editor.clone();
+        let headers_editor_sub = cx.subscribe_in(
+            &headers_editor,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let editor = this.headers_editor.clone();
+                    let source_text = this.current_headers_source_text(cx);
+                    cx.defer_in(window, move |_, window, cx| {
+                        editor.update(cx, |state, cx| state.set_value(source_text, window, cx));
+                    });
+                }
+            },
+        );
+        let sse_detail_editor = this.sse_detail_editor.clone();
+        let sse_detail_editor_sub = cx.subscribe_in(
+            &sse_detail_editor,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let editor = this.sse_detail_editor.clone();
+                    let detail_text = this.current_sse_detail_text().unwrap_or_default();
+                    cx.defer_in(window, move |_, window, cx| {
+                        editor.update(cx, |state, cx| state.set_value(detail_text, window, cx));
+                    });
+                }
+            },
+        );
+        this._subs = vec![
+            app_sub,
+            response_editor_sub,
+            headers_editor_sub,
+            sse_detail_editor_sub,
+        ];
         this
+    }
+
+    fn current_headers_source_text(&self, cx: &mut Context<Self>) -> String {
+        let state = self.app_state.read(cx);
+        let resolved_url = state
+            .active_request
+            .as_ref()
+            .map(|req| state.interpolate_variables(&req.url));
+
+        format_headers_dump(
+            state.active_request.as_ref(),
+            state.response.as_ref(),
+            resolved_url.as_deref(),
+        )
+    }
+
+    fn current_sse_detail_text(&self) -> Option<String> {
+        let selected_idx = self.selected_sse_event?;
+        let mut idx = 0;
+        for block in self.response_text.split("\n\n") {
+            if block.is_empty() {
+                continue;
+            }
+            if idx == selected_idx {
+                let mut data = String::new();
+                for line in block.split('\n') {
+                    if let Some(rest) = line.strip_prefix("data: ") {
+                        if !data.is_empty() {
+                            data.push('\n');
+                        }
+                        data.push_str(rest);
+                    }
+                }
+                return Some(format_sse_detail_text(&data));
+            }
+            idx += 1;
+        }
+        None
     }
 
     fn ensure_response_editor_mode(
@@ -283,7 +330,6 @@ impl ResponsePanel {
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
-                .readonly(true)
                 .soft_wrap(soft_wrap);
             if !plain {
                 next = next.code_editor("json");
@@ -378,8 +424,7 @@ impl ResponsePanel {
                                         .xsmall()
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.app_state.update(cx, |state, cx| {
-                                                state.is_loading = false;
-                                                state.request_started_at = None;
+                                                state.cancel_active_request();
                                                 cx.emit(AppEvent::LoadingChanged);
                                             });
                                         })),
@@ -414,7 +459,7 @@ impl ResponsePanel {
                                             div()
                                                 .text_sm()
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(status_text),
+                                                .child(single_line(status_text)),
                                         ),
                                 )
                                 .child(dot_separator(cx))
@@ -546,7 +591,6 @@ impl ResponsePanel {
                                             .searchable(true)
                                             .replaceable(false)
                                             .placeholder("Response will appear here... (Ctrl+F to search)")
-                                            .readonly(true)
                                             .soft_wrap(soft_wrap);
                                         if !plain {
                                             next = next.code_editor("json");
@@ -657,13 +701,30 @@ impl ResponsePanel {
     }
 
     fn render_preview_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let nodes = self.app_state.read(cx).preview_nodes.clone();
-        v_flex()
+        let body = self
+            .app_state
+            .read(cx)
+            .response
+            .as_ref()
+            .map(|r| r.body.clone())
+            .unwrap_or_default();
+        // TextView::html is a lightweight rich-text renderer, not a browser: it
+        // has no CSS/JS engine, so strip script/style/head/comments (otherwise
+        // their raw source renders as text) before handing it over. Also collapse
+        // CR/LF to spaces — gpui's text shaper panics on a newline within a run.
+        let body = sanitize_html_for_preview(&body);
+        div()
             .id("preview-scroll")
             .size_full()
             .overflow_scroll()
             .p_4()
-            .children(nodes.unwrap_or_default().iter().map(|n| render_node(n, cx)))
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(TextView::html("preview-html-view", body)),
+            )
     }
 
     fn render_loading_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -759,7 +820,7 @@ impl ResponsePanel {
                                 .text_color(cx.theme().muted_foreground)
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(key),
+                                .child(single_line(key)),
                         )
                         .child(
                             div()
@@ -768,7 +829,7 @@ impl ResponsePanel {
                                 .text_sm()
                                 .text_color(cx.theme().foreground)
                                 .whitespace_normal()
-                                .child(value),
+                                .child(single_line(value)),
                         )
                 }))
             })
@@ -789,7 +850,7 @@ impl ResponsePanel {
         let list = uniform_list(
             "timeline-scroll",
             events_len,
-            cx.processor(move |this: &mut Self, range, _window, cx| {
+            cx.processor(move |_this: &mut Self, range, _window, cx| {
                 let mut children = Vec::new();
                 for idx in range {
                     if let Some(ev) = timeline.get(idx) {
@@ -855,7 +916,7 @@ impl ResponsePanel {
                                                 .text_sm()
                                                 .font_family("monospace")
                                                 .text_color(cx.theme().foreground)
-                                                .child(ev.name.clone()),
+                                                .child(single_line(&ev.name)),
                                         ),
                                 )
                                 .child(
@@ -932,7 +993,6 @@ impl ResponsePanel {
                         format!("```text\n{}\n```", pretty_detail)
                     };
 
-                    let copy_detail = pretty_detail.clone();
                     let detail_view = v_flex()
                         .h(px(250.))
                         .w_full()
@@ -949,7 +1009,7 @@ impl ResponsePanel {
                                     div()
                                         .font_weight(gpui::FontWeight::BOLD)
                                         .text_lg()
-                                        .child(ev.name.clone()),
+                                        .child(single_line(&ev.name)),
                                 )
                                 .child(
                                     h_flex()
@@ -1027,7 +1087,7 @@ impl ResponsePanel {
         let list = uniform_list(
             "sse-scroll",
             events_len,
-            cx.processor(move |this: &mut Self, range, _window, cx| {
+            cx.processor(move |_this: &mut Self, range, _window, cx| {
                 let mut children = Vec::new();
                 for idx in range {
                     if let Some((etype, data)) = events.get(idx) {
@@ -1086,7 +1146,7 @@ impl ResponsePanel {
                                         .rounded_md()
                                         .text_sm()
                                         .font_family("monospace")
-                                        .child(etype),
+                                        .child(single_line(etype)),
                                 )
                                 .child(
                                     div()
@@ -1095,7 +1155,7 @@ impl ResponsePanel {
                                         .text_color(cx.theme().foreground)
                                         .overflow_hidden()
                                         .whitespace_nowrap()
-                                        .child(data_preview),
+                                        .child(single_line(data_preview)),
                                 )
                                 .into_any_element(),
                         );
@@ -1151,7 +1211,6 @@ impl ResponsePanel {
                         .searchable(true)
                         .replaceable(false)
                         .placeholder("Message detail")
-                        .readonly(true)
                         .soft_wrap(self.sse_detail_soft_wrap)
                         .code_editor("json");
                     state.set_value(detail_text, window, cx);
@@ -1231,7 +1290,6 @@ impl ResponsePanel {
                                                     .searchable(true)
                                                     .replaceable(false)
                                                     .placeholder("Message detail")
-                                                    .readonly(true)
                                                     .soft_wrap(soft_wrap)
                                                     .code_editor("json");
                                                 state.set_value(text, window, cx);
@@ -1635,6 +1693,74 @@ fn response_preview_text(body: &str, is_loading: bool) -> String {
             tail
         )
     }
+}
+
+/// Prepare an HTML body for the lightweight `TextView::html` renderer:
+/// remove elements it can't meaningfully render (whose raw source would
+/// otherwise appear as text), strip comments, and collapse newlines (gpui's
+/// text shaper panics on a newline inside a single text run).
+fn sanitize_html_for_preview(html: &str) -> String {
+    let mut out = html.to_string();
+    for tag in ["script", "style", "head", "noscript", "svg", "template", "iframe"] {
+        out = remove_html_blocks(&out, tag);
+    }
+    out = remove_between(&out, "<!--", "-->");
+    out.replace(['\r', '\n'], " ")
+}
+
+/// Remove every `<tag ...>...</tag>` block (case-insensitive) from `input`.
+fn remove_html_blocks(input: &str, tag: &str) -> String {
+    let lower = input.to_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut result = String::with_capacity(input.len());
+    let mut pos = 0;
+    while let Some(rel) = lower[pos..].find(&open) {
+        let start = pos + rel;
+        // Only treat as a real tag if followed by a delimiter (space, >, /, tab).
+        let after = lower[start + open.len()..].chars().next();
+        if !matches!(after, Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r') | None) {
+            result.push_str(&input[pos..start + open.len()]);
+            pos = start + open.len();
+            continue;
+        }
+        match lower[start..].find(&close) {
+            Some(close_rel) => {
+                let end = start + close_rel + close.len();
+                result.push_str(&input[pos..start]);
+                pos = end;
+            }
+            // Unclosed block: drop the rest.
+            None => {
+                result.push_str(&input[pos..start]);
+                return result;
+            }
+        }
+    }
+    result.push_str(&input[pos..]);
+    result
+}
+
+/// Remove every `start ... end` span (used for HTML comments).
+fn remove_between(input: &str, start: &str, end: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut pos = 0;
+    while let Some(rel) = input[pos..].find(start) {
+        let s = pos + rel;
+        match input[s..].find(end) {
+            Some(e_rel) => {
+                let e = s + e_rel + end.len();
+                result.push_str(&input[pos..s]);
+                pos = e;
+            }
+            None => {
+                result.push_str(&input[pos..s]);
+                return result;
+            }
+        }
+    }
+    result.push_str(&input[pos..]);
+    result
 }
 
 fn head_on_char_boundary(value: &str, max_bytes: usize) -> &str {

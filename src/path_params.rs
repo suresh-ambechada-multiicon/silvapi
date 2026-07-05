@@ -77,6 +77,35 @@ pub fn extract_path_params(url: &str) -> Vec<String> {
     params
 }
 
+pub fn extract_query_value_params(url: &str) -> Vec<String> {
+    let normalized = normalize_path_params(url);
+    let without_fragment = normalized
+        .split_once('#')
+        .map_or(normalized.as_str(), |(url, _)| url);
+    let Some((_, query)) = without_fragment.split_once('?') else {
+        return Vec::new();
+    };
+
+    let mut params = Vec::new();
+    for pair in query.split('&') {
+        let Some((_, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let Some(name) = value.strip_prefix(':') else {
+            continue;
+        };
+        let name = name
+            .chars()
+            .take_while(|ch| is_param_char(*ch))
+            .collect::<String>();
+        if !name.is_empty() && !params.contains(&name) {
+            params.push(name);
+        }
+    }
+
+    params
+}
+
 pub fn replace_path_param(url: &str, key: &str, value: &str) -> (String, bool) {
     let normalized = normalize_path_params(url);
     let chars: Vec<char> = normalized.chars().collect();
@@ -142,7 +171,9 @@ fn is_param_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_path_params, normalize_path_params, replace_path_param};
+    use super::{
+        extract_path_params, extract_query_value_params, normalize_path_params, replace_path_param,
+    };
 
     #[test]
     fn normalizes_single_brace_and_angle_params() {
@@ -157,6 +188,14 @@ mod tests {
         assert_eq!(
             extract_path_params("{{baseUrl}}/api/:user_id?q=:query_id"),
             vec!["user_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn extracts_query_value_params() {
+        assert_eq!(
+            extract_query_value_params("{{baseUrl}}/api/:user_id?limit=:limit&offset=:offset"),
+            vec!["limit".to_string(), "offset".to_string()]
         );
     }
 

@@ -1,9 +1,43 @@
 use std::time::Instant;
 
-use crate::models::{ApiRequest, AuthType, BodyType, HttpResponse, KeyValue, TimelineEvent};
+use crate::models::{ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue};
 
 pub struct HttpClient {
     client: reqwest::blocking::Client,
+}
+
+/// Categorize a reqwest error into a concise, human-readable message with
+/// the underlying cause detail appended.
+fn describe_reqwest_error(e: &reqwest::Error) -> String {
+    use std::error::Error;
+
+    let category = if e.is_timeout() {
+        "Request timed out"
+    } else if e.is_connect() {
+        "Connection failed"
+    } else if e.is_redirect() {
+        "Too many redirects"
+    } else if e.is_body() || e.is_decode() {
+        "Failed to read response body"
+    } else if e.is_request() {
+        "Invalid request"
+    } else {
+        "Request failed"
+    };
+
+    // Walk the source chain to find the deepest (most specific) cause, since
+    // reqwest wraps hyper/TLS/DNS errors.
+    let mut detail: Option<String> = None;
+    let mut src = e.source();
+    while let Some(s) = src {
+        detail = Some(s.to_string());
+        src = s.source();
+    }
+
+    match detail {
+        Some(d) => format!("{}: {}", category, d),
+        None => category.to_string(),
+    }
 }
 
 impl HttpClient {
@@ -74,7 +108,20 @@ impl HttpClient {
             if replaced_path_param {
                 final_url = next_url;
             } else {
-                query_params.push((p.key.as_str(), p.value.as_str()));
+                let (next_url, replaced_query_value_param) =
+                    replace_query_value_param(&final_url, &p.key, &p.value);
+                if replaced_query_value_param {
+                    final_url = next_url;
+                    continue;
+                }
+
+                let (next_url, replaced_query_param) =
+                    replace_query_param(&final_url, &p.key, &p.value);
+                if replaced_query_param {
+                    final_url = next_url;
+                } else {
+                    query_params.push((p.key.as_str(), p.value.as_str()));
+                }
             }
         }
 
@@ -98,23 +145,40 @@ impl HttpClient {
         }
 
         // Auth
-        match &request.auth.auth_type {
-            AuthType::Bearer => {
-                builder = builder.bearer_auth(&request.auth.bearer_token);
-            }
-            AuthType::Basic => {
-                builder = builder.basic_auth(
-                    &request.auth.basic_username,
-                    Some(&request.auth.basic_password),
-                );
-            }
-            AuthType::ApiKey => {
-                if request.auth.api_key_in_header {
-                    builder =
-                        builder.header(&request.auth.api_key_name, &request.auth.api_key_value);
+        if request.auth.enabled {
+            match &request.auth.auth_type {
+                AuthType::Bearer => {
+                    let prefix = request.auth.bearer_prefix.trim();
+                    if prefix.is_empty() || prefix.eq_ignore_ascii_case("bearer") {
+                        builder = builder.bearer_auth(&request.auth.bearer_token);
+                    } else if !request.auth.bearer_token.is_empty() {
+                        builder = builder.header(
+                            "Authorization",
+                            format!("{} {}", prefix, request.auth.bearer_token),
+                        );
+                    }
                 }
+                AuthType::Basic => {
+                    builder = builder.basic_auth(
+                        &request.auth.basic_username,
+                        Some(&request.auth.basic_password),
+                    );
+                }
+                AuthType::ApiKey => {
+                    if !request.auth.api_key_name.is_empty() {
+                        if request.auth.api_key_in_header {
+                            builder = builder
+                                .header(&request.auth.api_key_name, &request.auth.api_key_value);
+                        } else {
+                            builder = builder.query(&[(
+                                request.auth.api_key_name.as_str(),
+                                request.auth.api_key_value.as_str(),
+                            )]);
+                        }
+                    }
+                }
+                AuthType::AwsV4 | AuthType::Jwt | AuthType::OAuth2 | AuthType::None => {}
             }
-            AuthType::None => {}
         }
 
         // Body
@@ -133,7 +197,27 @@ impl HttpClient {
             BodyType::Raw => {
                 builder = builder.body(request.body.content.clone());
             }
+            BodyType::FormData => {
+                let (boundary, body, part_count) = build_multipart_body(request)?;
+                timeline.push(crate::models::TimelineEvent {
+                    name: format!("multipart/form-data: {} parts", part_count),
+                    timestamp: get_time(),
+                    icon: crate::models::TimelineIcon::Request,
+                    detail: None,
+                });
+                builder = builder
+                    .header(
+                        "Content-Type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(body);
+            }
             BodyType::UrlEncoded => {
+                let body = if request.body.urlencoded.is_empty() {
+                    request.body.content.clone()
+                } else {
+                    build_urlencoded_body(&request.body.urlencoded)
+                };
                 timeline.push(crate::models::TimelineEvent {
                     name: "content-type: application/x-www-form-urlencoded".to_string(),
                     timestamp: get_time(),
@@ -142,7 +226,21 @@ impl HttpClient {
                 });
                 builder = builder
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(request.body.content.clone());
+                    .body(body);
+            }
+            BodyType::BinaryFile => {
+                if !request.body.content.is_empty() {
+                    let bytes = std::fs::read(&request.body.content).map_err(|e| e.to_string())?;
+                    timeline.push(crate::models::TimelineEvent {
+                        name: format!("file body: {}", request.body.content),
+                        timestamp: get_time(),
+                        icon: crate::models::TimelineIcon::Request,
+                        detail: None,
+                    });
+                    builder = builder
+                        .header("Content-Type", "application/octet-stream")
+                        .body(bytes);
+                }
             }
             _ => {}
         }
@@ -154,7 +252,7 @@ impl HttpClient {
             detail: None,
         });
 
-        let mut response = builder.send().map_err(|e| e.to_string())?;
+        let mut response = builder.send().map_err(|e| describe_reqwest_error(&e))?;
 
         let status = response.status();
         let status_code = status.as_u16();
@@ -205,7 +303,7 @@ impl HttpClient {
                     on_chunk(&buf[..n]);
                 }
                 Err(e) => {
-                    return Err(e.to_string());
+                    return Err(format!("Failed to read response body: {}", e));
                 }
             }
         }
@@ -239,6 +337,100 @@ impl Default for HttpClient {
     }
 }
 
+fn build_multipart_body(request: &ApiRequest) -> Result<(String, Vec<u8>, usize), String> {
+    let boundary = format!("silvapi-{}", uuid::Uuid::new_v4());
+    let mut body = Vec::new();
+    let mut part_count = 0usize;
+
+    for part in &request.body.form_data {
+        if !part.enabled || part.name.is_empty() {
+            continue;
+        }
+
+        match part.kind {
+            FormDataPartKind::Text => {
+                push_multipart_part_header(
+                    &mut body,
+                    &boundary,
+                    &part.name,
+                    None,
+                    (!part.content_type.is_empty()).then_some(part.content_type.as_str()),
+                );
+                body.extend_from_slice(part.value.as_bytes());
+                body.extend_from_slice(b"\r\n");
+                part_count += 1;
+            }
+            FormDataPartKind::File => {
+                if part.value.is_empty() {
+                    continue;
+                }
+                let path = std::path::Path::new(&part.value);
+                let filename = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "file".to_string());
+                let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+                push_multipart_part_header(
+                    &mut body,
+                    &boundary,
+                    &part.name,
+                    Some(&filename),
+                    Some(if part.content_type.is_empty() {
+                        "application/octet-stream"
+                    } else {
+                        part.content_type.as_str()
+                    }),
+                );
+                body.extend_from_slice(&bytes);
+                body.extend_from_slice(b"\r\n");
+                part_count += 1;
+            }
+        }
+    }
+
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    Ok((boundary, body, part_count))
+}
+
+fn push_multipart_part_header(
+    body: &mut Vec<u8>,
+    boundary: &str,
+    name: &str,
+    filename: Option<&str>,
+    content_type: Option<&str>,
+) {
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{}\"",
+            escape_multipart_header_value(name)
+        )
+        .as_bytes(),
+    );
+    if let Some(filename) = filename {
+        body.extend_from_slice(
+            format!("; filename=\"{}\"", escape_multipart_header_value(filename)).as_bytes(),
+        );
+    }
+    body.extend_from_slice(b"\r\n");
+    if let Some(content_type) = content_type {
+        body.extend_from_slice(format!("Content-Type: {}\r\n", content_type).as_bytes());
+    }
+    body.extend_from_slice(b"\r\n");
+}
+
+fn escape_multipart_header_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '\r' && *ch != '\n')
+        .flat_map(|ch| match ch {
+            '"' => "\\\"".chars().collect::<Vec<_>>(),
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            _ => vec![ch],
+        })
+        .collect()
+}
+
 pub fn build_url_with_params(base_url: &str, params: &[KeyValue]) -> String {
     let enabled: Vec<_> = params
         .iter()
@@ -258,6 +450,94 @@ pub fn build_url_with_params(base_url: &str, params: &[KeyValue]) -> String {
     }
 }
 
+fn replace_query_param(url: &str, key: &str, value: &str) -> (String, bool) {
+    let (without_fragment, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base, Some(fragment)),
+        None => (url, None),
+    };
+
+    let Some((base, query)) = without_fragment.split_once('?') else {
+        return (url.to_string(), false);
+    };
+
+    let encoded_key = urlencod(key);
+    let encoded_value = urlencod(value);
+    let mut changed = false;
+    let mut pairs = Vec::new();
+
+    for pair in query.split('&') {
+        let (pair_key, _) = pair.split_once('=').unwrap_or((pair, ""));
+        if pair_key == key || pair_key == encoded_key {
+            pairs.push(format!("{encoded_key}={encoded_value}"));
+            changed = true;
+        } else {
+            pairs.push(pair.to_string());
+        }
+    }
+
+    if !changed {
+        return (url.to_string(), false);
+    }
+
+    let mut out = format!("{base}?{}", pairs.join("&"));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+
+    (out, true)
+}
+
+fn replace_query_value_param(url: &str, key: &str, value: &str) -> (String, bool) {
+    let (without_fragment, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base, Some(fragment)),
+        None => (url, None),
+    };
+
+    let Some((base, query)) = without_fragment.split_once('?') else {
+        return (url.to_string(), false);
+    };
+
+    let pattern = format!(":{key}");
+    let encoded_value = urlencod(value);
+    let mut changed = false;
+    let mut pairs = Vec::new();
+
+    for pair in query.split('&') {
+        let Some((pair_key, pair_value)) = pair.split_once('=') else {
+            pairs.push(pair.to_string());
+            continue;
+        };
+        if pair_value == pattern {
+            pairs.push(format!("{pair_key}={encoded_value}"));
+            changed = true;
+        } else {
+            pairs.push(pair.to_string());
+        }
+    }
+
+    if !changed {
+        return (url.to_string(), false);
+    }
+
+    let mut out = format!("{base}?{}", pairs.join("&"));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+
+    (out, true)
+}
+
+pub fn build_urlencoded_body(fields: &[KeyValue]) -> String {
+    fields
+        .iter()
+        .filter(|field| field.enabled && !field.key.is_empty())
+        .map(|field| format!("{}={}", urlencod(&field.key), urlencod(&field.value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn urlencod(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -271,4 +551,47 @@ fn urlencod(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{replace_query_param, replace_query_value_param};
+
+    #[test]
+    fn replaces_existing_query_param() {
+        assert_eq!(
+            replace_query_param(
+                "https://example.com/items?limit=&offset=0#page",
+                "limit",
+                "25"
+            ),
+            (
+                "https://example.com/items?limit=25&offset=0#page".to_string(),
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn leaves_url_unchanged_when_query_param_is_missing() {
+        assert_eq!(
+            replace_query_param("https://example.com/items?offset=0", "limit", "25"),
+            ("https://example.com/items?offset=0".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn replaces_query_value_placeholder() {
+        assert_eq!(
+            replace_query_value_param(
+                "https://example.com/items?page=:limit&offset=:offset#page",
+                "limit",
+                "25"
+            ),
+            (
+                "https://example.com/items?page=25&offset=:offset#page".to_string(),
+                true,
+            )
+        );
+    }
 }

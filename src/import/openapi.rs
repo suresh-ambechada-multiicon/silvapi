@@ -17,24 +17,7 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
 
     let mut col = Collection::new(&title);
 
-    // Detect server base URL
-    let mut base_url = v["servers"][0]["url"]
-        .as_str()
-        .unwrap_or("")
-        .trim_end_matches('/')
-        .to_string();
-
-    if let Some(vars) = v["servers"][0]["variables"].as_object() {
-        for (k, val) in vars {
-            let default_val = val["default"].as_str().unwrap_or("").to_string();
-            base_url = base_url.replace(&format!("{{{}}}", k), &default_val);
-        }
-    }
-
-    if !base_url.is_empty() {
-        col.variables
-            .push(crate::models::Variable::new("baseUrl", base_url));
-    }
+    add_server_variables(&v, &mut col);
 
     let paths = match v["paths"].as_object() {
         Some(p) => p,
@@ -84,7 +67,7 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
                 .map(String::from)
                 .unwrap_or_else(|| format!("{} {}", method_str.to_uppercase(), path));
 
-            let url = crate::path_params::normalize_path_params(&if col.variables.is_empty() {
+            let mut url = crate::path_params::normalize_path_params(&if col.variables.is_empty() {
                 format!("{}{}", "", path)
             } else {
                 format!("{{{{baseUrl}}}}{}", path)
@@ -92,21 +75,32 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
 
             let mut params = Vec::new();
             let mut headers = Vec::new();
+            let mut query_param_names = Vec::new();
 
             add_path_params(&url, &mut params);
-            add_openapi_params(&v, &path_item["parameters"], &mut params, &mut headers);
+            add_openapi_params(
+                &v,
+                &path_item["parameters"],
+                &mut params,
+                &mut headers,
+                &mut query_param_names,
+            );
             if let Some(params_arr) = op["parameters"].as_array() {
                 for param in params_arr {
                     let param = resolve_ref(&v, param);
                     let pname = param["name"].as_str().unwrap_or("").to_string();
                     let location = param["in"].as_str().unwrap_or("");
                     match location {
-                        "path" | "query" => push_unique_param(&mut params, &pname),
+                        "path" => push_unique_param(&mut params, &pname),
+                        "query" => {
+                            push_unique_query_param(&mut params, &mut query_param_names, &pname)
+                        }
                         "header" => headers.push(KeyValue::new(&pname, "")),
                         _ => {}
                     }
                 }
             }
+            url = append_query_params_to_url(&url, &query_param_names);
 
             let body = if let Some(content) = op["requestBody"]["content"].as_object() {
                 if content.contains_key("application/json") {
@@ -144,6 +138,8 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
                     RequestBody {
                         body_type: BodyType::Json,
                         content: body_str,
+                        urlencoded: Vec::new(),
+                        form_data: Vec::new(),
                     }
                 } else {
                     RequestBody::default()
@@ -220,18 +216,60 @@ fn resolve_ref<'a>(root: &'a Value, mut val: &'a Value) -> &'a Value {
     val
 }
 
+fn add_server_variables(root: &Value, col: &mut Collection) {
+    let Some(server) = root["servers"]
+        .as_array()
+        .and_then(|servers| servers.first())
+    else {
+        return;
+    };
+
+    let Some(raw_url) = server["url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    else {
+        return;
+    };
+
+    let mut base_url = raw_url.trim_end_matches('/').to_string();
+    if let Some(vars) = server["variables"].as_object() {
+        for (name, val) in vars {
+            if name.trim().is_empty() {
+                continue;
+            }
+
+            let default_val = val["default"].as_str().unwrap_or("").to_string();
+            push_unique_variable(col, name.as_str(), default_val);
+            base_url = base_url.replace(&format!("{{{name}}}"), &format!("{{{{{name}}}}}"));
+        }
+    }
+
+    push_unique_variable(col, "baseUrl", base_url);
+}
+
+fn push_unique_variable(col: &mut Collection, name: impl Into<String>, value: impl Into<String>) {
+    let name = name.into();
+    if !col.variables.iter().any(|var| var.name == name) {
+        col.variables
+            .push(crate::models::Variable::new(name, value.into()));
+    }
+}
+
 fn add_openapi_params(
     root: &Value,
     value: &Value,
     params: &mut Vec<KeyValue>,
     headers: &mut Vec<KeyValue>,
+    query_param_names: &mut Vec<String>,
 ) {
     if let Some(params_arr) = value.as_array() {
         for param in params_arr {
             let param = resolve_ref(root, param);
             let pname = param["name"].as_str().unwrap_or("").to_string();
             match param["in"].as_str().unwrap_or("") {
-                "path" | "query" => push_unique_param(params, &pname),
+                "path" => push_unique_param(params, &pname),
+                "query" => push_unique_query_param(params, query_param_names, &pname),
                 "header" => headers.push(KeyValue::new(&pname, "")),
                 _ => {}
             }
@@ -249,6 +287,64 @@ fn push_unique_param(params: &mut Vec<KeyValue>, key: &str) {
     if !key.is_empty() && !params.iter().any(|param| param.key == key) {
         params.push(KeyValue::new(key, ""));
     }
+}
+
+fn push_unique_query_param(
+    params: &mut Vec<KeyValue>,
+    query_param_names: &mut Vec<String>,
+    key: &str,
+) {
+    push_unique_param(params, key);
+    if !key.is_empty() && !query_param_names.iter().any(|name| name == key) {
+        query_param_names.push(key.to_string());
+    }
+}
+
+fn append_query_params_to_url(url: &str, query_param_names: &[String]) -> String {
+    if query_param_names.is_empty() {
+        return url.to_string();
+    }
+
+    let query = query_param_names
+        .iter()
+        .map(|name| {
+            let value = if is_query_placeholder_name(name) {
+                format!(":{name}")
+            } else {
+                String::new()
+            };
+            format!("{}={value}", urlencod(name))
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+
+    if url.contains('?') {
+        format!("{url}&{query}")
+    } else {
+        format!("{url}?{query}")
+    }
+}
+
+fn urlencod(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![b as char]
+            }
+            b' ' => vec!['+'],
+            _ => {
+                let hex = format!("%{:02X}", b);
+                hex.chars().collect()
+            }
+        })
+        .collect()
+}
+
+fn is_query_placeholder_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 fn generate_default_from_schema<'a>(root: &'a Value, mut schema: &'a Value) -> Value {
@@ -275,5 +371,106 @@ fn generate_default_from_schema<'a>(root: &'a Value, mut schema: &'a Value) -> V
         "integer" | "number" => serde_json::json!(0),
         "boolean" => Value::Bool(false),
         _ => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_openapi;
+    use crate::models::CollectionItem;
+
+    #[test]
+    fn imports_query_params_into_url() {
+        let spec = r#"
+openapi: 3.0.3
+info:
+  title: PokeAPI
+  version: "1.0"
+servers:
+  - url: https://pokeapi.co
+paths:
+  /api/v2/berry/:
+    get:
+      operationId: berry_list
+      summary: List berries
+      parameters:
+        - name: limit
+          required: false
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          required: false
+          in: query
+          schema:
+            type: integer
+        - name: q
+          required: false
+          in: query
+          schema:
+            type: string
+"#;
+
+        let collection = import_openapi(spec).expect("imports openapi yaml");
+        let request = match &collection.items[0] {
+            CollectionItem::Request(request) => request,
+            CollectionItem::Folder(folder) => match &folder.items[0] {
+                CollectionItem::Request(request) => request,
+                CollectionItem::Folder(_) => panic!("unexpected nested folder"),
+            },
+        };
+
+        assert_eq!(
+            request.url,
+            "{{baseUrl}}/api/v2/berry/?limit=:limit&offset=:offset&q=:q"
+        );
+        assert_eq!(
+            request
+                .params
+                .iter()
+                .map(|param| param.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["limit", "offset", "q"]
+        );
+    }
+
+    #[test]
+    fn imports_openapi_server_variables() {
+        let spec = r#"
+openapi: 3.0.3
+info:
+  title: Variable API
+  version: "1.0"
+servers:
+  - url: https://{environment}.example.com/{version}
+    variables:
+      environment:
+        default: api
+      version:
+        default: v1
+paths:
+  /users/{id}:
+    get:
+      summary: Get user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+"#;
+
+        let collection = import_openapi(spec).expect("imports server variables");
+        let variables = collection
+            .variables
+            .iter()
+            .map(|var| (var.name.as_str(), var.value.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(variables.contains(&("environment", "api")));
+        assert!(variables.contains(&("version", "v1")));
+        assert!(
+            variables.contains(&("baseUrl", "https://{{environment}}.example.com/{{version}}"))
+        );
     }
 }

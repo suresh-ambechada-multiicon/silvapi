@@ -1,9 +1,24 @@
-use std::collections::HashMap;
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use gpui::{App, EventEmitter};
 
 use crate::models::{ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace};
+
+#[derive(Clone, Debug, Default)]
+pub struct RequestActivity {
+    pub running: usize,
+    pub running_run_ids: Vec<u64>,
+    pub started_at: Option<Instant>,
+    pub latest_run_id: u64,
+    pub last_status: Option<u16>,
+    pub last_error: Option<String>,
+}
+
+impl RequestActivity {
+    pub fn is_loading(&self) -> bool {
+        !self.running_run_ids.is_empty()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum AppEvent {
@@ -12,7 +27,6 @@ pub enum AppEvent {
     LoadingChanged,
     WorkspaceChanged,
     SaveNeeded,
-    PreviewParsed,
     ResponseFormatted,
     ToggleLayout,
 }
@@ -25,9 +39,19 @@ pub struct AppState {
     pub is_loading: bool,
     pub request_started_at: Option<Instant>,
     pub error: Option<String>,
-    pub preview_nodes: Option<Vec<crate::ui::html_preview::HtmlNode>>,
+    pub request_activity: HashMap<String, RequestActivity>,
+    next_request_run_id: u64,
     pub formatted_response: Option<String>,
+    /// LRU order of request-ids present in `workspace.response_cache`.
+    /// Most-recently-used id is last. Not persisted.
+    cache_order: Vec<String>,
 }
+
+/// Maximum number of distinct requests whose responses are kept in the
+/// in-memory `response_cache`. Bounds memory growth over long sessions; the
+/// least-recently-selected request's cached responses are evicted first.
+/// Full history remains persisted in SQLite (see `storage::response_history`).
+const MAX_RESPONSE_CACHE_ENTRIES: usize = 50;
 
 impl EventEmitter<AppEvent> for AppState {}
 
@@ -46,8 +70,10 @@ impl AppState {
             is_loading: false,
             request_started_at: None,
             error: None,
-            preview_nodes: None,
+            request_activity: HashMap::new(),
+            next_request_run_id: 0,
             formatted_response: None,
+            cache_order: Vec::new(),
         }
     }
 
@@ -61,12 +87,47 @@ impl AppState {
                 .response_cache
                 .get(id)
                 .and_then(|history| history.last().cloned());
-            self.preview_nodes = None;
             self.formatted_response = None;
+            self.touch_response_cache(id);
+            self.sync_active_activity_fields();
             true
         } else {
             false
         }
+    }
+
+    /// Mark `id` as most-recently-used in the response cache and evict the
+    /// least-recently-used entries once the cache exceeds its bound. Also
+    /// reconciles entries inserted outside `select_request` (e.g. when a
+    /// request completes) so they participate in LRU eviction.
+    fn touch_response_cache(&mut self, id: &str) {
+        self.cache_order.retain(|existing| existing != id);
+        // Track any cache keys not yet in the LRU order (inserted elsewhere).
+        for key in self.workspace.response_cache.keys() {
+            if key != id && !self.cache_order.contains(key) {
+                self.cache_order.push(key.clone());
+            }
+        }
+        if self.workspace.response_cache.contains_key(id) {
+            self.cache_order.push(id.to_string());
+        }
+
+        while self.workspace.response_cache.len() > MAX_RESPONSE_CACHE_ENTRIES {
+            let mut evicted = false;
+            while !self.cache_order.is_empty() {
+                let oldest = self.cache_order.remove(0);
+                if self.workspace.response_cache.remove(&oldest).is_some() {
+                    evicted = true;
+                    break;
+                }
+            }
+            if !evicted {
+                break;
+            }
+        }
+        // Drop bookkeeping for ids no longer present in the cache.
+        self.cache_order
+            .retain(|id| self.workspace.response_cache.contains_key(id));
     }
 
     pub fn find_request(&self, id: &str) -> Option<ApiRequest> {
@@ -199,6 +260,104 @@ impl AppState {
             .map(|started| started.elapsed().as_millis() as u64)
     }
 
+    pub fn request_is_loading(&self, id: &str) -> bool {
+        self.request_activity
+            .get(id)
+            .map(RequestActivity::is_loading)
+            .unwrap_or(false)
+    }
+
+    pub fn is_request_run_current(&self, id: &str, run_id: u64) -> bool {
+        self.request_activity
+            .get(id)
+            .map(|activity| {
+                activity.latest_run_id == run_id && activity.running_run_ids.contains(&run_id)
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn request_started(&mut self, id: &str) -> u64 {
+        self.next_request_run_id = self.next_request_run_id.saturating_add(1);
+        let run_id = self.next_request_run_id;
+        let activity = self.request_activity.entry(id.to_string()).or_default();
+        activity.running_run_ids.push(run_id);
+        activity.running = activity.running_run_ids.len();
+        activity.started_at = Some(Instant::now());
+        activity.latest_run_id = run_id;
+        activity.last_error = None;
+        self.sync_active_activity_fields();
+        run_id
+    }
+
+    pub fn request_initial_response(&mut self, id: &str, run_id: u64, response: &HttpResponse) {
+        if let Some(activity) = self.request_activity.get_mut(id) {
+            if run_id == activity.latest_run_id {
+                activity.last_status = Some(response.status);
+                activity.last_error = None;
+            }
+        }
+        self.sync_active_activity_fields();
+    }
+
+    pub fn request_finished(
+        &mut self,
+        id: &str,
+        run_id: u64,
+        result: &Result<HttpResponse, String>,
+    ) {
+        let activity = self.request_activity.entry(id.to_string()).or_default();
+        if let Some(pos) = activity
+            .running_run_ids
+            .iter()
+            .position(|running_id| *running_id == run_id)
+        {
+            activity.running_run_ids.remove(pos);
+        }
+        activity.running = activity.running_run_ids.len();
+        if activity.running_run_ids.is_empty() {
+            activity.started_at = None;
+        }
+        if run_id == activity.latest_run_id {
+            match result {
+                Ok(response) => {
+                    activity.last_status = Some(response.status);
+                    activity.last_error = None;
+                }
+                Err(error) => {
+                    activity.last_error = Some(error.clone());
+                }
+            }
+        }
+        self.sync_active_activity_fields();
+    }
+
+    pub fn cancel_active_request(&mut self) {
+        let Some(id) = self.active_request_id.clone() else {
+            return;
+        };
+        if let Some(activity) = self.request_activity.get_mut(&id) {
+            activity.running_run_ids.clear();
+            activity.running = 0;
+            activity.started_at = None;
+            activity.latest_run_id = self.next_request_run_id.saturating_add(1);
+        }
+        self.sync_active_activity_fields();
+    }
+
+    pub fn sync_active_activity_fields(&mut self) {
+        let activity = self
+            .active_request_id
+            .as_ref()
+            .and_then(|id| self.request_activity.get(id));
+        self.is_loading = activity.map(RequestActivity::is_loading).unwrap_or(false);
+        self.request_started_at = activity.and_then(|activity| activity.started_at);
+        self.error = if self.is_loading {
+            None
+        } else {
+            activity.and_then(|activity| activity.last_error.clone())
+        };
+    }
+
     pub fn is_active_response_target(&self, request_id: &Option<String>) -> bool {
         match (request_id.as_deref(), self.active_request_id.as_deref()) {
             (Some(target), Some(active)) => target == active,
@@ -214,28 +373,14 @@ impl AppState {
 
     pub fn interpolate_variables(&self, text: &str) -> String {
         let mut result = text.to_string();
-        for var in &self.workspace.variables {
-            if var.enabled {
-                let pattern = format!("{{{{{}}}}}", var.name);
-                result = result.replace(&pattern, &var.value);
+        for _ in 0..8 {
+            let next = self.interpolate_variables_once(&result);
+            if next == result {
+                break;
             }
+            result = next;
         }
-        if let Some(req) = &self.active_request {
-            let col_id = self.active_request_id.as_deref().and_then(|_id| {
-                self.workspace
-                    .collections
-                    .iter()
-                    .find(|c| find_in_items(&c.items, _id).is_some())
-            });
-            if let Some(col) = col_id {
-                for var in &col.variables {
-                    if var.enabled {
-                        let pattern = format!("{{{{{}}}}}", var.name);
-                        result = result.replace(&pattern, &var.value);
-                    }
-                }
-            }
-        }
+
         // Postman dynamic variables
         if result.contains("{{$guid}}") {
             result = result.replace("{{$guid}}", &uuid::Uuid::new_v4().to_string());
@@ -249,6 +394,39 @@ impl AppState {
         if result.contains("{{$randomInt}}") {
             let val = rand::random::<u32>() % 1001;
             result = result.replace("{{$randomInt}}", &val.to_string());
+        }
+
+        result
+    }
+
+    fn interpolate_variables_once(&self, text: &str) -> String {
+        let mut result = text.to_string();
+        if let Some(request_id) = self.active_request_id.as_deref() {
+            for var in folder_variables_for_request(&self.workspace.collections, request_id) {
+                if var.enabled {
+                    let pattern = format!("{{{{{}}}}}", var.name);
+                    result = result.replace(&pattern, &var.value);
+                }
+            }
+        }
+        if let Some(col) = self.active_request_id.as_deref().and_then(|id| {
+            self.workspace
+                .collections
+                .iter()
+                .find(|c| find_in_items(&c.items, id).is_some())
+        }) {
+            for var in &col.variables {
+                if var.enabled {
+                    let pattern = format!("{{{{{}}}}}", var.name);
+                    result = result.replace(&pattern, &var.value);
+                }
+            }
+        }
+        for var in &self.workspace.variables {
+            if var.enabled {
+                let pattern = format!("{{{{{}}}}}", var.name);
+                result = result.replace(&pattern, &var.value);
+            }
         }
 
         result
@@ -353,6 +531,41 @@ fn find_in_items(items: &[CollectionItem], id: &str) -> Option<ApiRequest> {
         }
     }
     None
+}
+
+fn folder_variables_for_request(
+    collections: &[crate::models::Collection],
+    request_id: &str,
+) -> Vec<crate::models::Variable> {
+    for collection in collections {
+        let mut variables = Vec::new();
+        if collect_folder_variables_for_request(&collection.items, request_id, &mut variables) {
+            return variables;
+        }
+    }
+    Vec::new()
+}
+
+fn collect_folder_variables_for_request(
+    items: &[CollectionItem],
+    request_id: &str,
+    variables: &mut Vec<crate::models::Variable>,
+) -> bool {
+    for item in items {
+        match item {
+            CollectionItem::Request(request) if request.id == request_id => return true,
+            CollectionItem::Folder(folder) => {
+                let start_len = variables.len();
+                variables.extend(folder.variables.iter().cloned());
+                if collect_folder_variables_for_request(&folder.items, request_id, variables) {
+                    return true;
+                }
+                variables.truncate(start_len);
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn rename_in_items(items: &mut Vec<CollectionItem>, id: &str, name: &str) -> bool {
@@ -575,3 +788,127 @@ fn update_in_items(items: &mut Vec<CollectionItem>, id: &str, new_req: ApiReques
 }
 
 pub fn init(_cx: &mut App) {}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::AppState;
+    use crate::models::{ApiRequest, Collection, CollectionItem, Folder, Variable, Workspace};
+
+    #[test]
+    fn interpolate_variables_resolves_nested_collection_variables() {
+        let request = ApiRequest::with_name("Nested variable");
+        let request_id = request.id.clone();
+
+        let mut collection = Collection::new("Imported API");
+        collection
+            .variables
+            .push(Variable::new("environment", "api"));
+        collection.variables.push(Variable::new(
+            "baseUrl",
+            "https://{{environment}}.example.com",
+        ));
+        collection.items.push(CollectionItem::Request(request));
+
+        let mut workspace = Workspace::new("Test");
+        workspace.collections.push(collection);
+
+        let state = AppState {
+            workspace,
+            active_request: None,
+            active_request_id: Some(request_id),
+            response: None,
+            is_loading: false,
+            request_started_at: None,
+            error: None,
+            request_activity: HashMap::new(),
+            next_request_run_id: 0,
+            formatted_response: None,
+            cache_order: Vec::new(),
+        };
+
+        assert_eq!(
+            state.interpolate_variables("{{baseUrl}}/users"),
+            "https://api.example.com/users"
+        );
+    }
+
+    #[test]
+    fn interpolate_variables_resolves_parent_folder_variables() {
+        let request = ApiRequest::with_name("Folder variable");
+        let request_id = request.id.clone();
+
+        let mut folder = Folder::new("api");
+        folder
+            .variables
+            .push(Variable::new("baseUrl", "https://folder.example.com"));
+        folder.items.push(CollectionItem::Request(request));
+
+        let mut collection = Collection::new("Imported API");
+        collection
+            .variables
+            .push(Variable::new("baseUrl", "https://collection.example.com"));
+        collection.items.push(CollectionItem::Folder(folder));
+
+        let mut workspace = Workspace::new("Test");
+        workspace.collections.push(collection);
+
+        let state = AppState {
+            workspace,
+            active_request: None,
+            active_request_id: Some(request_id),
+            response: None,
+            is_loading: false,
+            request_started_at: None,
+            error: None,
+            request_activity: HashMap::new(),
+            next_request_run_id: 0,
+            formatted_response: None,
+            cache_order: Vec::new(),
+        };
+
+        assert_eq!(
+            state.interpolate_variables("{{baseUrl}}/users"),
+            "https://folder.example.com/users"
+        );
+    }
+
+    #[test]
+    fn loading_state_is_scoped_to_selected_request() {
+        let request_a = ApiRequest::with_name("Request A");
+        let request_a_id = request_a.id.clone();
+        let request_b = ApiRequest::with_name("Request B");
+        let request_b_id = request_b.id.clone();
+
+        let mut collection = Collection::new("Collection");
+        collection.items.push(CollectionItem::Request(request_a));
+        collection.items.push(CollectionItem::Request(request_b));
+
+        let mut state = AppState {
+            workspace: Workspace::new("Test"),
+            active_request: None,
+            active_request_id: None,
+            response: None,
+            is_loading: false,
+            request_started_at: None,
+            error: None,
+            request_activity: HashMap::new(),
+            next_request_run_id: 0,
+            formatted_response: None,
+            cache_order: Vec::new(),
+        };
+        state.workspace.collections.push(collection);
+
+        assert!(state.select_request(&request_a_id));
+        state.request_started(&request_a_id);
+        assert!(state.is_loading);
+
+        assert!(state.select_request(&request_b_id));
+        assert!(!state.is_loading);
+        assert!(state.request_is_loading(&request_a_id));
+
+        assert!(state.select_request(&request_a_id));
+        assert!(state.is_loading);
+    }
+}

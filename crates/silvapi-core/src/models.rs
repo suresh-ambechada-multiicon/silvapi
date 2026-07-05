@@ -594,26 +594,29 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> bool {
 }
 
 #[cfg(test)]
-mod fuzzy_tests {
-    use super::fuzzy_match;
+#[path = "models_tests.rs"]
+mod fuzzy_tests;
 
-    #[test]
-    fn subsequence_matches() {
-        assert!(fuzzy_match("berry-firmness", "brfrm"));
-    }
+pub fn build_urlencoded_body(fields: &[KeyValue]) -> String {
+    fields
+        .iter()
+        .filter(|field| field.enabled && !field.key.is_empty())
+        .map(|field| format!("{}={}", urlencod(&field.key), urlencod(&field.value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
 
-    #[test]
-    fn out_of_order_fails() {
-        assert!(!fuzzy_match("abc", "acb"));
+pub fn urlencod(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
     }
-
-    #[test]
-    fn empty_needle_matches() {
-        assert!(fuzzy_match("anything", ""));
-    }
-
-    #[test]
-    fn case_insensitive() {
-        assert!(fuzzy_match("HelloWorld", "hw"));
-    }
+    out
 }

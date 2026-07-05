@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Instant};
 
 use gpui::{App, EventEmitter};
 
-use crate::models::{ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace};
+use silvapi_core::models::{ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace};
 
 #[derive(Clone, Debug, Default)]
 pub struct RequestActivity {
@@ -45,6 +45,9 @@ pub struct AppState {
     /// LRU order of request-ids present in `workspace.response_cache`.
     /// Most-recently-used id is last. Not persisted.
     cache_order: Vec<String>,
+    /// Abort handles for in-flight async requests, keyed by run_id. Cancelling
+    /// aborts the tokio task mid-flight (real cancellation of the network I/O).
+    run_abort: HashMap<u64, tokio::task::AbortHandle>,
 }
 
 /// Maximum number of distinct requests whose responses are kept in the
@@ -74,6 +77,7 @@ impl AppState {
             next_request_run_id: 0,
             formatted_response: None,
             cache_order: Vec::new(),
+            run_abort: std::collections::HashMap::new(),
         }
     }
 
@@ -289,6 +293,12 @@ impl AppState {
         run_id
     }
 
+    /// Register the abort handle for an in-flight request's task so it can be
+    /// cancelled mid-flight.
+    pub fn register_run_abort(&mut self, run_id: u64, handle: tokio::task::AbortHandle) {
+        self.run_abort.insert(run_id, handle);
+    }
+
     pub fn request_initial_response(&mut self, id: &str, run_id: u64, response: &HttpResponse) {
         if let Some(activity) = self.request_activity.get_mut(id) {
             if run_id == activity.latest_run_id {
@@ -328,6 +338,7 @@ impl AppState {
                 }
             }
         }
+        self.run_abort.remove(&run_id);
         self.sync_active_activity_fields();
     }
 
@@ -336,7 +347,12 @@ impl AppState {
             return;
         };
         if let Some(activity) = self.request_activity.get_mut(&id) {
-            activity.running_run_ids.clear();
+            // Abort the in-flight tokio tasks so the network I/O actually stops.
+            for run_id in activity.running_run_ids.drain(..) {
+                if let Some(handle) = self.run_abort.remove(&run_id) {
+                    handle.abort();
+                }
+            }
             activity.running = 0;
             activity.started_at = None;
             activity.latest_run_id = self.next_request_run_id.saturating_add(1);
@@ -432,7 +448,7 @@ impl AppState {
         result
     }
 
-    pub fn import_collection(&mut self, mut col: crate::models::Collection) {
+    pub fn import_collection(&mut self, mut col: silvapi_core::models::Collection) {
         for var in std::mem::take(&mut col.variables) {
             if !self.workspace.variables.iter().any(|v| v.name == var.name) {
                 self.workspace.variables.push(var);
@@ -534,9 +550,9 @@ fn find_in_items(items: &[CollectionItem], id: &str) -> Option<ApiRequest> {
 }
 
 fn folder_variables_for_request(
-    collections: &[crate::models::Collection],
+    collections: &[silvapi_core::models::Collection],
     request_id: &str,
-) -> Vec<crate::models::Variable> {
+) -> Vec<silvapi_core::models::Variable> {
     for collection in collections {
         let mut variables = Vec::new();
         if collect_folder_variables_for_request(&collection.items, request_id, &mut variables) {
@@ -549,7 +565,7 @@ fn folder_variables_for_request(
 fn collect_folder_variables_for_request(
     items: &[CollectionItem],
     request_id: &str,
-    variables: &mut Vec<crate::models::Variable>,
+    variables: &mut Vec<silvapi_core::models::Variable>,
 ) -> bool {
     for item in items {
         match item {
@@ -601,7 +617,7 @@ fn collect_folder_opts(items: &[CollectionItem], prefix: &str, opts: &mut Vec<(S
 }
 
 fn folder_exists_in_collections(
-    collections: &[crate::models::Collection],
+    collections: &[silvapi_core::models::Collection],
     folder_id: &str,
 ) -> bool {
     collections
@@ -618,7 +634,7 @@ fn contains_folder_id(items: &[CollectionItem], folder_id: &str) -> bool {
 }
 
 fn folder_contains_id_in_collections(
-    collections: &[crate::models::Collection],
+    collections: &[silvapi_core::models::Collection],
     folder_id: &str,
     target_id: &str,
 ) -> bool {
@@ -649,7 +665,7 @@ fn contains_item_id(items: &[CollectionItem], target_id: &str) -> bool {
 }
 
 fn extract_item_from_all(
-    collections: &mut Vec<crate::models::Collection>,
+    collections: &mut Vec<silvapi_core::models::Collection>,
     id: &str,
 ) -> Option<CollectionItem> {
     for col in collections.iter_mut() {
@@ -790,125 +806,5 @@ fn update_in_items(items: &mut Vec<CollectionItem>, id: &str, new_req: ApiReques
 pub fn init(_cx: &mut App) {}
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::AppState;
-    use crate::models::{ApiRequest, Collection, CollectionItem, Folder, Variable, Workspace};
-
-    #[test]
-    fn interpolate_variables_resolves_nested_collection_variables() {
-        let request = ApiRequest::with_name("Nested variable");
-        let request_id = request.id.clone();
-
-        let mut collection = Collection::new("Imported API");
-        collection
-            .variables
-            .push(Variable::new("environment", "api"));
-        collection.variables.push(Variable::new(
-            "baseUrl",
-            "https://{{environment}}.example.com",
-        ));
-        collection.items.push(CollectionItem::Request(request));
-
-        let mut workspace = Workspace::new("Test");
-        workspace.collections.push(collection);
-
-        let state = AppState {
-            workspace,
-            active_request: None,
-            active_request_id: Some(request_id),
-            response: None,
-            is_loading: false,
-            request_started_at: None,
-            error: None,
-            request_activity: HashMap::new(),
-            next_request_run_id: 0,
-            formatted_response: None,
-            cache_order: Vec::new(),
-        };
-
-        assert_eq!(
-            state.interpolate_variables("{{baseUrl}}/users"),
-            "https://api.example.com/users"
-        );
-    }
-
-    #[test]
-    fn interpolate_variables_resolves_parent_folder_variables() {
-        let request = ApiRequest::with_name("Folder variable");
-        let request_id = request.id.clone();
-
-        let mut folder = Folder::new("api");
-        folder
-            .variables
-            .push(Variable::new("baseUrl", "https://folder.example.com"));
-        folder.items.push(CollectionItem::Request(request));
-
-        let mut collection = Collection::new("Imported API");
-        collection
-            .variables
-            .push(Variable::new("baseUrl", "https://collection.example.com"));
-        collection.items.push(CollectionItem::Folder(folder));
-
-        let mut workspace = Workspace::new("Test");
-        workspace.collections.push(collection);
-
-        let state = AppState {
-            workspace,
-            active_request: None,
-            active_request_id: Some(request_id),
-            response: None,
-            is_loading: false,
-            request_started_at: None,
-            error: None,
-            request_activity: HashMap::new(),
-            next_request_run_id: 0,
-            formatted_response: None,
-            cache_order: Vec::new(),
-        };
-
-        assert_eq!(
-            state.interpolate_variables("{{baseUrl}}/users"),
-            "https://folder.example.com/users"
-        );
-    }
-
-    #[test]
-    fn loading_state_is_scoped_to_selected_request() {
-        let request_a = ApiRequest::with_name("Request A");
-        let request_a_id = request_a.id.clone();
-        let request_b = ApiRequest::with_name("Request B");
-        let request_b_id = request_b.id.clone();
-
-        let mut collection = Collection::new("Collection");
-        collection.items.push(CollectionItem::Request(request_a));
-        collection.items.push(CollectionItem::Request(request_b));
-
-        let mut state = AppState {
-            workspace: Workspace::new("Test"),
-            active_request: None,
-            active_request_id: None,
-            response: None,
-            is_loading: false,
-            request_started_at: None,
-            error: None,
-            request_activity: HashMap::new(),
-            next_request_run_id: 0,
-            formatted_response: None,
-            cache_order: Vec::new(),
-        };
-        state.workspace.collections.push(collection);
-
-        assert!(state.select_request(&request_a_id));
-        state.request_started(&request_a_id);
-        assert!(state.is_loading);
-
-        assert!(state.select_request(&request_b_id));
-        assert!(!state.is_loading);
-        assert!(state.request_is_loading(&request_a_id));
-
-        assert!(state.select_request(&request_a_id));
-        assert!(state.is_loading);
-    }
-}
+#[path = "state_tests.rs"]
+mod tests;

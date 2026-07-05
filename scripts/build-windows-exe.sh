@@ -2,22 +2,29 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-workspace_dir="$(cd "$repo_dir/.." && pwd)"
 target_root="$repo_dir/.cache/target-windows"
 target_dir="$target_root/x86_64-pc-windows-msvc/release"
 dist_dir="$repo_dir/dist"
 xwin_cache_dir="$repo_dir/.cache/xwin"
-cargo_registry_dir="$repo_dir/.cache/cargo-registry"
-cargo_git_dir="$repo_dir/.cache/cargo-git"
 
-mkdir -p "$xwin_cache_dir" "$cargo_registry_dir" "$cargo_git_dir" "$target_root"
+# shellcheck source=scripts/build-common.sh
+source "$repo_dir/scripts/build-common.sh"
+
+mkdir -p "$xwin_cache_dir" "$target_root" "$dist_dir"
+print_build_plan
+
 docker build -f "$repo_dir/Dockerfile.windows" -t silvapi-build:windows "$repo_dir"
+
+# `:z` on every bind mount relabels it for SELinux (Fedora) — without it the
+# container gets "Permission denied" (e.g. creating /root/.cache/cargo-xwin).
 docker run --rm \
-  -v "$workspace_dir:/work" \
-  -v "$target_root:/work/silvapi/target" \
-  -v "$xwin_cache_dir:/root/.cache" \
-  -v "$cargo_registry_dir:/usr/local/cargo/registry" \
-  -v "$cargo_git_dir:/usr/local/cargo/git" \
+  "${common_docker_env[@]}" \
+  "${common_docker_volumes[@]}" \
+  -v "$repo_dir:/work/silvapi:z" \
+  -v "$target_root:/work/silvapi/target:z" \
+  -v "$xwin_cache_dir:/root/.cache:z" \
+  -v "$CACHE_CARGO_REGISTRY:/usr/local/cargo/registry:z" \
+  -v "$CACHE_CARGO_GIT:/usr/local/cargo/git:z" \
   -e XWIN_HTTP_RETRIES=10 \
   -w /work/silvapi \
   silvapi-build:windows \
@@ -46,8 +53,8 @@ docker run --rm \
         exit 1
       fi
     done < <(find /usr/local/cargo/git/checkouts -path "*/crates/gpui_windows/src/directx_renderer.rs" -type f)
-    /usr/local/cargo/bin/cargo xwin build --release --target x86_64-pc-windows-msvc --xwin-http-retries 10'
+    /usr/local/cargo/bin/cargo xwin build --release --target x86_64-pc-windows-msvc --xwin-http-retries 10
+    sccache --show-stats || true'
 
-mkdir -p "$dist_dir"
 cp "$target_dir/silvapi.exe" "$dist_dir/Silvapi.exe"
 ls -lh "$dist_dir/Silvapi.exe"

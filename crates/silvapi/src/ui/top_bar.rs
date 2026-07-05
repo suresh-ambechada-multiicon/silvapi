@@ -7,10 +7,8 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::{
-    models::Variable,
-    state::{AppEvent, AppState},
-};
+use silvapi_core::{models::Variable};
+use crate::{state::{AppEvent, AppState}};
 
 pub struct TopBar {
     app_state: Entity<AppState>,
@@ -444,7 +442,7 @@ pub(crate) fn handle_openapi_file(
     window_handle: AnyWindowHandle,
 ) {
     match std::fs::read_to_string(path) {
-        Ok(content) => match crate::import::import_openapi(&content) {
+        Ok(content) => match silvapi_core::import::import_openapi(&content) {
             Ok(col) => {
                 let name = col.name.clone();
                 let _ = cx.update(|cx| {
@@ -478,7 +476,7 @@ pub(crate) fn handle_postman_file(
     window_handle: AnyWindowHandle,
 ) {
     match std::fs::read_to_string(path) {
-        Ok(content) => match crate::import::import_postman(&content) {
+        Ok(content) => match silvapi_core::import::import_postman(&content) {
             Ok(col) => {
                 let name = col.name.clone();
                 let _ = cx.update(|cx| {

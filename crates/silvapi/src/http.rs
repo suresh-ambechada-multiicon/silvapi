@@ -1,9 +1,19 @@
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::models::{ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue};
+use silvapi_core::models::{ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue};
+
+/// A single shared async `reqwest::Client` so connection pools / DNS caches are
+/// reused across requests instead of rebuilt each time.
+fn shared_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().unwrap_or_default())
+        .clone()
+}
 
 pub struct HttpClient {
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
 }
 
 /// Categorize a reqwest error into a concise, human-readable message with
@@ -43,13 +53,15 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
 impl HttpClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .build()
-                .unwrap_or_default(),
+            client: shared_client(),
         }
     }
 
-    pub fn execute<F, G>(
+    /// Execute a request asynchronously on the shared runtime. The body is
+    /// streamed chunk-by-chunk (never fully buffered by us before the caller
+    /// sees it); `on_chunk` receives each chunk as it arrives. The task can be
+    /// aborted mid-flight for true cancellation.
+    pub async fn execute<F, G>(
         &self,
         request: &ApiRequest,
         resolved_url: &str,
@@ -65,22 +77,22 @@ impl HttpClient {
 
         let get_time = || chrono::Local::now().format("%H:%M:%S.%3f").to_string();
 
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: "validate_certificates = true".to_string(),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Setting,
+            icon: silvapi_core::models::TimelineIcon::Setting,
             detail: None,
         });
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: "redirects = true".to_string(),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Setting,
+            icon: silvapi_core::models::TimelineIcon::Setting,
             detail: None,
         });
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: format!("{} {}", request.method.as_str(), resolved_url),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Request,
+            icon: silvapi_core::models::TimelineIcon::Request,
             detail: None,
         });
 
@@ -95,7 +107,7 @@ impl HttpClient {
             _ => reqwest::Method::GET,
         };
 
-        let mut final_url = crate::path_params::normalize_path_params(resolved_url);
+        let mut final_url = silvapi_core::path_params::normalize_path_params(resolved_url);
         let mut query_params: Vec<(&str, &str)> = Vec::new();
 
         for p in &request.params {
@@ -104,7 +116,7 @@ impl HttpClient {
             }
 
             let (next_url, replaced_path_param) =
-                crate::path_params::replace_path_param(&final_url, &p.key, &p.value);
+                silvapi_core::path_params::replace_path_param(&final_url, &p.key, &p.value);
             if replaced_path_param {
                 final_url = next_url;
             } else {
@@ -134,10 +146,10 @@ impl HttpClient {
         // Headers
         for header in &request.headers {
             if header.enabled && !header.key.is_empty() {
-                timeline.push(crate::models::TimelineEvent {
+                timeline.push(silvapi_core::models::TimelineEvent {
                     name: format!("{}: {}", header.key, header.value),
                     timestamp: get_time(),
-                    icon: crate::models::TimelineIcon::Request,
+                    icon: silvapi_core::models::TimelineIcon::Request,
                     detail: Some(format!("Header\n{}\nValue\n{}", header.key, header.value)),
                 });
                 builder = builder.header(&header.key, &header.value);
@@ -184,10 +196,10 @@ impl HttpClient {
         // Body
         match &request.body.body_type {
             BodyType::Json => {
-                timeline.push(crate::models::TimelineEvent {
+                timeline.push(silvapi_core::models::TimelineEvent {
                     name: "content-type: application/json".to_string(),
                     timestamp: get_time(),
-                    icon: crate::models::TimelineIcon::Request,
+                    icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
                 builder = builder
@@ -199,10 +211,10 @@ impl HttpClient {
             }
             BodyType::FormData => {
                 let (boundary, body, part_count) = build_multipart_body(request)?;
-                timeline.push(crate::models::TimelineEvent {
+                timeline.push(silvapi_core::models::TimelineEvent {
                     name: format!("multipart/form-data: {} parts", part_count),
                     timestamp: get_time(),
-                    icon: crate::models::TimelineIcon::Request,
+                    icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
                 builder = builder
@@ -218,10 +230,10 @@ impl HttpClient {
                 } else {
                     build_urlencoded_body(&request.body.urlencoded)
                 };
-                timeline.push(crate::models::TimelineEvent {
+                timeline.push(silvapi_core::models::TimelineEvent {
                     name: "content-type: application/x-www-form-urlencoded".to_string(),
                     timestamp: get_time(),
-                    icon: crate::models::TimelineIcon::Request,
+                    icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
                 builder = builder
@@ -231,10 +243,10 @@ impl HttpClient {
             BodyType::BinaryFile => {
                 if !request.body.content.is_empty() {
                     let bytes = std::fs::read(&request.body.content).map_err(|e| e.to_string())?;
-                    timeline.push(crate::models::TimelineEvent {
+                    timeline.push(silvapi_core::models::TimelineEvent {
                         name: format!("file body: {}", request.body.content),
                         timestamp: get_time(),
-                        icon: crate::models::TimelineIcon::Request,
+                        icon: silvapi_core::models::TimelineIcon::Request,
                         detail: None,
                     });
                     builder = builder
@@ -245,23 +257,23 @@ impl HttpClient {
             _ => {}
         }
 
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: "Sending request to server".into(),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Info,
+            icon: silvapi_core::models::TimelineIcon::Info,
             detail: None,
         });
 
-        let mut response = builder.send().map_err(|e| describe_reqwest_error(&e))?;
+        let response = builder.send().await.map_err(|e| describe_reqwest_error(&e))?;
 
         let status = response.status();
         let status_code = status.as_u16();
         let status_text = status.canonical_reason().unwrap_or("").to_string();
 
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: format!("HTTP/1.1 {} {}", status_code, status_text),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Response,
+            icon: silvapi_core::models::TimelineIcon::Response,
             detail: None,
         });
 
@@ -271,10 +283,10 @@ impl HttpClient {
             .map(|(k, v)| {
                 let key = k.to_string();
                 let val = v.to_str().unwrap_or("").to_string();
-                timeline.push(crate::models::TimelineEvent {
+                timeline.push(silvapi_core::models::TimelineEvent {
                     name: format!("{}: {}", key, val),
                     timestamp: get_time(),
-                    icon: crate::models::TimelineIcon::Response,
+                    icon: silvapi_core::models::TimelineIcon::Response,
                     detail: Some(format!("Header\n{}\nValue\n{}", key, val)),
                 });
                 (key, val)
@@ -293,14 +305,13 @@ impl HttpClient {
         });
 
         let mut body_bytes = Vec::new();
-        use std::io::Read;
-        let mut buf = [0; 8192];
-        loop {
-            match response.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    body_bytes.extend_from_slice(&buf[..n]);
-                    on_chunk(&buf[..n]);
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    body_bytes.extend_from_slice(&bytes);
+                    on_chunk(&bytes);
                 }
                 Err(e) => {
                     return Err(format!("Failed to read response body: {}", e));
@@ -312,10 +323,10 @@ impl HttpClient {
         let size_bytes = body_bytes.len();
 
         let total_ms = start.elapsed().as_millis() as u64;
-        timeline.push(crate::models::TimelineEvent {
+        timeline.push(silvapi_core::models::TimelineEvent {
             name: "Response completed".into(),
             timestamp: get_time(),
-            icon: crate::models::TimelineIcon::Response,
+            icon: silvapi_core::models::TimelineIcon::Response,
             detail: None,
         });
 
@@ -529,69 +540,9 @@ fn replace_query_value_param(url: &str, key: &str, value: &str) -> (String, bool
     (out, true)
 }
 
-pub fn build_urlencoded_body(fields: &[KeyValue]) -> String {
-    fields
-        .iter()
-        .filter(|field| field.enabled && !field.key.is_empty())
-        .map(|field| format!("{}={}", urlencod(&field.key), urlencod(&field.value)))
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
-fn urlencod(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    out
-}
+pub use silvapi_core::models::build_urlencoded_body;
+use silvapi_core::models::urlencod;
 
 #[cfg(test)]
-mod tests {
-    use super::{replace_query_param, replace_query_value_param};
-
-    #[test]
-    fn replaces_existing_query_param() {
-        assert_eq!(
-            replace_query_param(
-                "https://example.com/items?limit=&offset=0#page",
-                "limit",
-                "25"
-            ),
-            (
-                "https://example.com/items?limit=25&offset=0#page".to_string(),
-                true,
-            )
-        );
-    }
-
-    #[test]
-    fn leaves_url_unchanged_when_query_param_is_missing() {
-        assert_eq!(
-            replace_query_param("https://example.com/items?offset=0", "limit", "25"),
-            ("https://example.com/items?offset=0".to_string(), false)
-        );
-    }
-
-    #[test]
-    fn replaces_query_value_placeholder() {
-        assert_eq!(
-            replace_query_value_param(
-                "https://example.com/items?page=:limit&offset=:offset#page",
-                "limit",
-                "25"
-            ),
-            (
-                "https://example.com/items?page=25&offset=:offset#page".to_string(),
-                true,
-            )
-        );
-    }
-}
+#[path = "http_tests.rs"]
+mod tests;

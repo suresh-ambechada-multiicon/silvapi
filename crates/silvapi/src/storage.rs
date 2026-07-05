@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, params};
 
-use crate::models::{HttpResponse, Workspace};
+use silvapi_core::models::{HttpResponse, Workspace};
 
 const DB_FILE: &str = "silvapi.sqlite";
 const MAX_RESPONSE_HISTORY_PER_REQUEST: i64 = 20;

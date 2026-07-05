@@ -39,6 +39,12 @@ RUN set -eux; \
 RUN rustup target add x86_64-pc-windows-msvc
 RUN cargo install cargo-xwin --locked
 
+# sccache: caches compiled crate outputs across builds (see Dockerfile.compat).
+RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz \
+    | tar -xz -C /tmp \
+    && mv /tmp/sccache-*/sccache /usr/local/bin/sccache \
+    && chmod +x /usr/local/bin/sccache
+
 WORKDIR /work/silvapi
 
 CMD ["cargo", "xwin", "build", "--release", "--target", "x86_64-pc-windows-msvc"]

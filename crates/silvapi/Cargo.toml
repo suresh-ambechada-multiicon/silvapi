@@ -1,39 +1,23 @@
 [package]
 name = "silvapi"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
+silvapi-core = { path = "../silvapi-core" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", package = "zed-font-kit", version = "0.14.1-zed" }
 anyhow = "1.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-reqwest = { version = "0.11", features = ["blocking", "json", "rustls-tls"], default-features = false }
-uuid = { version = "1", features = ["v4"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.11", features = ["json", "rustls-tls", "stream"], default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
+uuid = { workspace = true }
 futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-serde_yaml = "0.9"
 chrono = "0.4.45"
-scraper = "0.27.0"
-ego-tree = "0.11.0"
 rand = "0.10.1"
 rust-embed = "8.11.0"
-
-[profile.release]
-opt-level = "z"
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = "symbols"
-debug = false
-incremental = false
-
-[profile.release-fast]
-inherits = "release"
-opt-level = 3
-lto = "thin"
-codegen-units = 1

@@ -170,7 +170,7 @@ fn parse_body(body_val: &Value) -> RequestBody {
                 .collect();
             RequestBody {
                 body_type: BodyType::UrlEncoded,
-                content: crate::http::build_urlencoded_body(&pairs),
+                content: crate::models::build_urlencoded_body(&pairs),
                 urlencoded: pairs,
                 form_data: Vec::new(),
             }

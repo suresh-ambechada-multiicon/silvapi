@@ -3,9 +3,7 @@ use gpui_component::{Root, Theme, ThemeRegistry};
 use std::path::PathBuf;
 
 mod http;
-mod import;
-mod models;
-mod path_params;
+mod runtime;
 mod state;
 mod storage;
 mod ui;
@@ -43,7 +41,7 @@ fn main() {
 }
 
 #[derive(rust_embed::RustEmbed)]
-#[folder = "themes/"]
+#[folder = "../../themes/"]
 struct ThemeAssets;
 
 fn init_theme(cx: &mut App) {

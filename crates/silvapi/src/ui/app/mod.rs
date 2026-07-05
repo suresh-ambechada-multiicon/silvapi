@@ -14,9 +14,9 @@ use crate::state::{AppEvent, AppState};
 
 use super::{
     actions::{
-        ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
-        FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
-        ThemePicker, ToggleMaximize,
+        ApiPicker, CloseSettings, FocusCollectionPanel, FocusRequestPanel,
+        FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, SendRequest,
+        ShortcutNoOp, ThemePicker, ToggleMaximize,
     },
     collection_panel::CollectionPanel,
     request_panel::RequestPanel,
@@ -49,6 +49,14 @@ pub struct AppView {
     settings_open: bool,
     settings_focus: FocusHandle,
     shortcut_inputs: Vec<ShortcutInput>,
+    /// The id of the shortcut currently being recorded (button clicked, waiting
+    /// for a keypress), or None. While recording, global key bindings are
+    /// cleared so the pressed combo doesn't trigger its action.
+    recording_shortcut: Option<String>,
+    shortcut_capture_focus: FocusHandle,
+    /// Message shown when the last shortcut capture was rejected (duplicate, or
+    /// a bare key with no modifier). None when there's nothing to report.
+    shortcut_message: Option<String>,
     available_fonts: Vec<String>,
     selected_font_family: String,
     font_picker_open: bool,
@@ -57,6 +65,7 @@ pub struct AppView {
     font_cursor: usize,
     font_scroll: gpui::UniformListScrollHandle,
     font_size_input: Entity<InputState>,
+    font_size_slider: Entity<gpui_component::slider::SliderState>,
     api_scroll: gpui::UniformListScrollHandle,
     save_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -97,224 +106,12 @@ impl Focusable for AppView {
     }
 }
 
+
+mod pickers;
+mod settings;
+mod shortcuts;
+
 impl AppView {
-    fn shortcut_specs() -> Vec<ShortcutSpec> {
-        vec![
-            ShortcutSpec {
-                id: "theme_picker",
-                label: "Open Theme Picker",
-                default_key: "ctrl-k",
-            },
-            ShortcutSpec {
-                id: "api_picker",
-                label: "Open API Picker",
-                default_key: "ctrl-p",
-            },
-            ShortcutSpec {
-                id: "next_api",
-                label: "Next API",
-                default_key: "ctrl-tab",
-            },
-            ShortcutSpec {
-                id: "prev_api",
-                label: "Previous API",
-                default_key: "shift-ctrl-tab",
-            },
-            ShortcutSpec {
-                id: "send_request",
-                label: "Send Request",
-                default_key: "ctrl-enter",
-            },
-            ShortcutSpec {
-                id: "rename_selected",
-                label: "Rename Selected",
-                default_key: "enter",
-            },
-            ShortcutSpec {
-                id: "toggle_maximize",
-                label: "Toggle Maximize Panel",
-                default_key: "shift-escape",
-            },
-            ShortcutSpec {
-                id: "open_settings",
-                label: "Open Settings",
-                default_key: "ctrl-,",
-            },
-            ShortcutSpec {
-                id: "focus_active_request",
-                label: "Reveal Active Request",
-                default_key: "ctrl-shift-f",
-            },
-            ShortcutSpec {
-                id: "focus_url",
-                label: "Focus URL",
-                default_key: "ctrl-l",
-            },
-            ShortcutSpec {
-                id: "focus_collection_panel",
-                label: "Focus Request List",
-                default_key: "alt-1",
-            },
-            ShortcutSpec {
-                id: "focus_request_panel",
-                label: "Focus Request Editor",
-                default_key: "alt-2",
-            },
-            ShortcutSpec {
-                id: "focus_response_panel",
-                label: "Focus Response Panel",
-                default_key: "alt-3",
-            },
-        ]
-    }
-
-    fn system_font_families(cx: &App) -> Vec<String> {
-        // Enumerate via gpui's own text system rather than font-kit: these are
-        // exactly the family names `.font_family()` can resolve. On Linux the
-        // two agree (fontconfig), but on Windows gpui's DirectWrite backend has
-        // its own name set — font-kit names it can't match silently fall back,
-        // so a picked font would appear to do nothing.
-        let mut fonts = cx.text_system().all_font_names();
-        fonts.retain(|font| !font.trim().is_empty() && font != ".SystemUIFont");
-        fonts.sort_by_key(|font| font.to_lowercase());
-        fonts.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-
-        let mut out = vec![".SystemUIFont".to_string()];
-        for preferred in ["Inter", "Arial", "DejaVu Sans", "Noto Sans", "Segoe UI"] {
-            if fonts.iter().any(|font| font == preferred) {
-                out.push(preferred.to_string());
-            }
-        }
-        for font in fonts {
-            if !out
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(&font))
-            {
-                out.push(font);
-            }
-        }
-        out
-    }
-
-    fn shortcut_key(spec: &ShortcutSpec) -> String {
-        let key = format!("shortcut.{}", spec.id);
-        crate::storage::load_setting(&key)
-            .ok()
-            .flatten()
-            .filter(|saved| Keystroke::parse(saved).is_ok())
-            .unwrap_or_else(|| spec.default_key.to_string())
-    }
-
-    fn bind_shortcut(id: &str, key: &str, cx: &mut Context<Self>) {
-        if Keystroke::parse(key).is_err() {
-            return;
-        }
-        match id {
-            "theme_picker" => cx.bind_keys([KeyBinding::new(key, ThemePicker, None)]),
-            "api_picker" => cx.bind_keys([KeyBinding::new(key, ApiPicker, None)]),
-            "next_api" => cx.bind_keys([KeyBinding::new(key, NextApi, None)]),
-            "prev_api" => cx.bind_keys([KeyBinding::new(key, PrevApi, None)]),
-            "send_request" => cx.bind_keys([KeyBinding::new(key, SendRequest, None)]),
-            "rename_selected" => cx.bind_keys([KeyBinding::new(key, RenameSelected, None)]),
-            "toggle_maximize" => cx.bind_keys([KeyBinding::new(key, ToggleMaximize, None)]),
-            "open_settings" => cx.bind_keys([KeyBinding::new(key, OpenSettings, None)]),
-            "focus_active_request" => {
-                cx.bind_keys([KeyBinding::new(key, FocusActiveRequest, None)])
-            }
-            "focus_url" => cx.bind_keys([KeyBinding::new(key, FocusUrl, None)]),
-            "focus_collection_panel" => {
-                cx.bind_keys([KeyBinding::new(key, FocusCollectionPanel, None)])
-            }
-            "focus_request_panel" => cx.bind_keys([KeyBinding::new(key, FocusRequestPanel, None)]),
-            "focus_response_panel" => {
-                cx.bind_keys([KeyBinding::new(key, FocusResponsePanel, None)])
-            }
-            _ => {}
-        }
-    }
-
-    fn bind_configured_shortcuts(cx: &mut Context<Self>) {
-        for spec in Self::shortcut_specs() {
-            let key = Self::shortcut_key(&spec);
-            Self::bind_shortcut(spec.id, &key, cx);
-        }
-    }
-
-    fn save_shortcut(spec: &ShortcutSpec, input: &Entity<InputState>, cx: &mut Context<Self>) {
-        let value = input.read(cx).value().trim().to_lowercase();
-        if value.is_empty() || Keystroke::parse(&value).is_err() {
-            return;
-        }
-        let key = format!("shortcut.{}", spec.id);
-        if crate::storage::save_setting(&key, &value).is_err() {
-            return;
-        }
-        Self::bind_shortcut(spec.id, &value, cx);
-    }
-
-    fn configured_font_family(cx: &mut Context<Self>) -> SharedString {
-        crate::storage::load_setting("ui.font_family")
-            .ok()
-            .flatten()
-            .filter(|font| !font.trim().is_empty())
-            .map(SharedString::from)
-            .unwrap_or_else(|| cx.theme().font_family.clone())
-    }
-
-    fn configured_font_size(cx: &mut Context<Self>) -> Pixels {
-        crate::storage::load_setting("ui.font_size")
-            .ok()
-            .flatten()
-            .and_then(|size| size.parse::<f32>().ok())
-            .filter(|size| (10.0..=24.0).contains(size))
-            .map(px)
-            .unwrap_or_else(|| cx.theme().font_size)
-    }
-
-    fn apply_user_font_settings(cx: &mut Context<Self>) {
-        let font_family = Self::configured_font_family(cx);
-        let font_size = Self::configured_font_size(cx);
-        let theme = Theme::global_mut(cx);
-        theme.font_family = font_family;
-        theme.font_size = font_size;
-        cx.refresh_windows();
-    }
-
-    fn apply_user_font_settings_app(cx: &mut App) {
-        if let Some(font_family) = crate::storage::load_setting("ui.font_family")
-            .ok()
-            .flatten()
-            .filter(|font| !font.trim().is_empty())
-        {
-            Theme::global_mut(cx).font_family = SharedString::from(font_family);
-        }
-        if let Some(font_size) = crate::storage::load_setting("ui.font_size")
-            .ok()
-            .flatten()
-            .and_then(|size| size.parse::<f32>().ok())
-            .filter(|size| (10.0..=24.0).contains(size))
-        {
-            Theme::global_mut(cx).font_size = px(font_size);
-        }
-        cx.refresh_windows();
-    }
-
-    fn save_font_settings(family: &str, size_input: &Entity<InputState>, cx: &mut Context<Self>) {
-        let family = family.trim().to_string();
-        if !family.is_empty() {
-            let _ = crate::storage::save_setting("ui.font_family", &family);
-        }
-
-        let size_text = size_input.read(cx).value().trim().to_string();
-        if let Ok(size) = size_text.parse::<f32>() {
-            if (10.0..=24.0).contains(&size) {
-                let _ = crate::storage::save_setting("ui.font_size", &size.to_string());
-            }
-        }
-
-        Self::apply_user_font_settings(cx);
-    }
-
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let theme_focus = cx.focus_handle();
@@ -336,7 +133,7 @@ impl AppView {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(400))
                             .await;
-                        let workspace = app_state.update(cx, |state, _| crate::models::Workspace {
+                        let workspace = app_state.update(cx, |state, _| silvapi_core::models::Workspace {
                             id: state.workspace.id.clone(),
                             name: state.workspace.name.clone(),
                             collections: state.workspace.collections.clone(),
@@ -442,14 +239,60 @@ impl AppView {
                 .unwrap_or_else(|| "16".to_string());
             state.set_value(value, window, cx);
         });
+        let initial_font_size = crate::storage::load_setting("ui.font_size")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|s| (10.0..=24.0).contains(s))
+            .unwrap_or(16.0);
+        let font_size_slider = cx.new(|_| {
+            gpui_component::slider::SliderState::new()
+                .min(10.0)
+                .max(24.0)
+                .step(1.0)
+                .default_value(initial_font_size)
+        });
+
         let font_size_for_sub = font_size_input.clone();
+        let slider_for_input_sub = font_size_slider.clone();
         let font_size_sub = cx.subscribe_in(
             &font_size_input,
             window,
-            move |this, _, ev: &InputEvent, _, cx| {
+            move |this, _, ev: &InputEvent, window, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     let family = this.selected_font_family.clone();
                     Self::save_font_settings(&family, &font_size_for_sub, cx);
+                    // Keep the slider in sync with a manually-typed size.
+                    if let Ok(size) = font_size_for_sub.read(cx).value().trim().parse::<f32>() {
+                        let size = size.clamp(10.0, 24.0);
+                        slider_for_input_sub.update(cx, |s, cx| {
+                            s.set_value(size, window, cx);
+                        });
+                    }
+                }
+            },
+        );
+
+        let font_size_for_slider = font_size_input.clone();
+        let font_size_slider_sub = cx.subscribe_in(
+            &font_size_slider,
+            window,
+            move |this, _, ev: &gpui_component::slider::SliderEvent, window, cx| {
+                match ev {
+                    // While dragging, only reflect the number — applying the
+                    // font size live would rescale the whole UI (and the slider
+                    // itself) on every frame, making it jump under the cursor.
+                    gpui_component::slider::SliderEvent::Change(value) => {
+                        let size = value.start().round() as i32;
+                        font_size_for_slider.update(cx, |state, cx| {
+                            state.set_value(size.to_string(), window, cx);
+                        });
+                    }
+                    // Apply (and persist) once the drag ends.
+                    gpui_component::slider::SliderEvent::Release(_) => {
+                        let family = this.selected_font_family.clone();
+                        Self::save_font_settings(&family, &font_size_for_slider, cx);
+                    }
                 }
             },
         );
@@ -507,6 +350,9 @@ impl AppView {
             settings_open: false,
             settings_focus: cx.focus_handle(),
             shortcut_inputs,
+            recording_shortcut: None,
+            shortcut_capture_focus: cx.focus_handle(),
+            shortcut_message: None,
             available_fonts,
             selected_font_family,
             font_picker_open: false,
@@ -515,6 +361,7 @@ impl AppView {
             font_cursor: 0,
             font_scroll: gpui::UniformListScrollHandle::new(),
             font_size_input,
+            font_size_slider,
             api_scroll: gpui::UniformListScrollHandle::new(),
             save_task: None,
             _subs: {
@@ -524,6 +371,7 @@ impl AppView {
                     api_search_sub,
                     font_search_sub,
                     font_size_sub,
+                    font_size_slider_sub,
                 ];
                 subs.extend(shortcut_subs);
                 subs
@@ -534,379 +382,27 @@ impl AppView {
         }
     }
 
-    fn update_api_list(&mut self, cx: &mut Context<Self>) {
-        let query = self.api_search.read(cx).value().to_lowercase();
-        self.ensure_api_list_for_query(&query, cx);
-        cx.notify();
-    }
-
-    fn update_font_list(&mut self, cx: &mut Context<Self>) {
-        self.rebuild_font_list(cx);
-        cx.notify();
-    }
-
-    fn rebuild_font_list(&mut self, cx: &App) {
-        let query = self.font_search.read(cx).value().to_lowercase();
-        self.font_list = self
-            .available_fonts
-            .iter()
-            .filter(|font| query.is_empty() || font.to_lowercase().contains(&query))
-            .cloned()
-            .collect();
-
-        self.font_cursor = self
-            .font_list
-            .iter()
-            .position(|font| font == &self.selected_font_family)
-            .unwrap_or(0);
-        if !self.font_list.is_empty() {
-            self.font_scroll
-                .scroll_to_item(self.font_cursor, ScrollStrategy::Nearest);
-        }
-    }
-
-    fn rebuild_api_list(&mut self, cx: &App) {
-        let query = self.api_search.read(cx).value().to_lowercase();
-        self.rebuild_api_list_for_query(query, cx);
-    }
-
-    fn ensure_api_list_for_query(&mut self, query: &str, cx: &App) {
-        if self.api_list_dirty || self.api_list_query != query {
-            self.rebuild_api_list_for_query(query.to_string(), cx);
-        }
-    }
-
-    fn rebuild_api_list_for_query(&mut self, query: String, cx: &App) {
-        let mut out = Vec::new();
-        let state = self.app_state.read(cx);
-        for col in &state.workspace.collections {
-            Self::collect_reqs(&col.items, &col.name, &mut out);
-        }
-        if let (Some(active_id), Some(active_req)) =
-            (&state.active_request_id, &state.active_request)
-        {
-            if let Some((_, name)) = out.iter_mut().find(|(id, _)| id == active_id) {
-                if let Some((prefix, _)) = name.rsplit_once(" / ") {
-                    *name = format!("{} / {}", prefix, active_req.name);
-                } else {
-                    *name = active_req.name.clone();
-                }
-            }
-        }
-
-        if !query.is_empty() {
-            out.retain(|(_, name)| name.to_lowercase().contains(&query));
-        }
-
-        self.api_list = out;
-        self.api_list_query = query;
-        self.api_list_dirty = false;
-        self.api_cursor = 0;
-        if !self.api_list.is_empty() {
-            self.api_scroll.scroll_to_item(0, ScrollStrategy::Nearest);
-        }
-    }
-
-    fn render_api_picker_rows(
-        &mut self,
-        range: std::ops::Range<usize>,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut rows = Vec::new();
-        for idx in range {
-            let Some((id, name)) = self.api_list.get(idx).cloned() else {
-                continue;
-            };
-            let is_selected = idx == self.api_cursor;
-            let bg = if is_selected {
-                cx.theme().primary.opacity(0.1)
-            } else {
-                gpui::transparent_black()
-            };
-            let text_color = if is_selected {
-                cx.theme().primary
-            } else {
-                cx.theme().foreground
-            };
-
-            rows.push(
-                div()
-                    .id(SharedString::from(format!("api-picker-row-{}", idx)))
-                    .w_full()
-                    .h(px(48.))
-                    .px_4()
-                    .py_2()
-                    .bg(bg)
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.api_cursor = idx;
-                            this.select_api_from_picker(id.clone(), window, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(text_color)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(name),
-                    )
-                    .into_any_element(),
-            );
-        }
-        rows
-    }
-
-    fn collect_reqs(
-        items: &[crate::models::CollectionItem],
-        prefix: &str,
-        out: &mut Vec<(String, String)>,
-    ) {
-        for item in items {
-            match item {
-                crate::models::CollectionItem::Folder(f) => {
-                    let new_pref = format!("{} / {}", prefix, f.name);
-                    Self::collect_reqs(&f.items, &new_pref, out);
-                }
-                crate::models::CollectionItem::Request(r) => {
-                    out.push((r.id.clone(), format!("{} / {}", prefix, r.name)));
-                }
-            }
-        }
-    }
-
-    fn close_api_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.api_picker_open = false;
-        let fh = self.focus_handle.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    fn select_api_from_picker(
-        &mut self,
-        req_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.api_picker_open = false;
-        self.app_state.update(cx, |state, cx| {
-            if state.select_request(&req_id) {
-                cx.emit(AppEvent::RequestSelected);
-            }
-        });
-        self.collection_panel.update(cx, |panel, cx| {
-            panel.reveal_active_request(true, window, cx);
-        });
-        cx.notify();
-    }
-
-    fn close_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.theme_picker_open = false;
-        let fh = self.focus_handle.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    fn open_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.font_search
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        self.rebuild_font_list(cx);
-        self.font_picker_open = true;
-        cx.notify();
-
-        let fh = self.font_search.read(cx).focus_handle(cx);
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-    }
-
-    fn close_font_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.font_picker_open = false;
-        let fh = self.settings_focus.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    fn select_font(&mut self, font: String, cx: &mut Context<Self>) {
-        self.selected_font_family = font.clone();
-        let _ = crate::storage::save_setting("ui.font_family", &font);
-        Self::save_font_settings(&font, &self.font_size_input, cx);
-        cx.notify();
-    }
-
-    fn open_api_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.api_search
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.ensure_api_list_for_query("", cx);
-
-        if let Some(active_id) = &self.app_state.read(cx).active_request_id {
-            if let Some(idx) = self.api_list.iter().position(|(id, _)| id == active_id) {
-                self.api_cursor = idx;
-                self.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
-            }
-        }
-
-        self.api_picker_open = true;
-        cx.notify();
-
-        let fh = self.api_search.read(cx).focus_handle(cx);
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-    }
-
-    fn select_adjacent_api(&mut self, step: isize, cx: &mut Context<Self>) {
-        self.ensure_api_list_for_query("", cx);
-        let len = self.api_list.len();
-        if len == 0 {
-            return;
-        }
-
-        let current_id = self.app_state.read(cx).active_request_id.clone();
-        let current_idx = current_id
-            .as_ref()
-            .and_then(|id| {
-                if self
-                    .api_list
-                    .get(self.api_cursor)
-                    .map(|(rid, _)| rid == id)
-                    .unwrap_or(false)
-                {
-                    Some(self.api_cursor)
-                } else {
-                    self.api_list.iter().position(|(rid, _)| rid == id)
-                }
-            })
-            .unwrap_or(0);
-
-        let target_idx = if step.is_negative() {
-            (current_idx + len - 1) % len
-        } else {
-            (current_idx + 1) % len
-        };
-        let target_id = self.api_list[target_idx].0.clone();
-        self.api_cursor = target_idx;
-
-        self.app_state.update(cx, |state, cx| {
-            if state.select_request(&target_id) {
-                cx.emit(AppEvent::RequestSelected);
-            }
-        });
-    }
-
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_open = true;
-        let fh = self.settings_focus.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_open = false;
-        let fh = self.focus_handle.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    fn update_theme_list(&mut self, cx: &mut Context<Self>) {
-        let query = self.theme_search.read(cx).value().to_lowercase();
-        let mut sorted: Vec<String> = ThemeRegistry::global(cx)
-            .themes()
-            .keys()
-            .map(|s| s.to_string())
-            .filter(|s| query.is_empty() || s.to_lowercase().contains(&query))
-            .collect();
-        sorted.sort();
-        self.theme_list = sorted;
-
-        let current = Theme::global(cx).theme_name().to_string();
-        self.theme_cursor = self
-            .theme_list
-            .iter()
-            .position(|n| n == &current)
-            .unwrap_or(0);
-
-        if !self.theme_list.is_empty() {
-            self.theme_scroll.scroll_to_item(self.theme_cursor);
-        }
-
-        self.apply_theme_at_cursor(cx);
-        cx.notify();
-    }
-
-    fn open_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.original_theme = Theme::global(cx).theme_name().to_string();
-
-        self.theme_search
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.update_theme_list(cx);
-
-        self.theme_picker_open = true;
-        cx.notify();
-
-        let cursor = self.theme_cursor;
-        let scroll = self.theme_scroll.clone();
-        cx.defer_in(window, move |_, _, _| {
-            scroll.scroll_to_item(cursor);
-        });
-
-        let fh = self.theme_search.read(cx).focus_handle(cx);
-        cx.defer_in(window, move |_, window, cx| {
-            fh.focus(window, cx);
-        });
-    }
-
-    fn apply_theme_at_cursor(&mut self, cx: &mut Context<Self>) {
-        if let Some(name) = self.theme_list.get(self.theme_cursor) {
-            let name = name.clone();
-            if let Some(cfg) = ThemeRegistry::global(cx)
-                .themes()
-                .get(name.as_str())
-                .cloned()
-            {
-                Theme::global_mut(cx).apply_config(&cfg);
-                Self::apply_user_font_settings(cx);
-                cx.refresh_windows();
-            }
-        }
-    }
-
-    fn restore_original_theme(&mut self, cx: &mut Context<Self>) {
-        let name = self.original_theme.clone();
-        if let Some(cfg) = ThemeRegistry::global(cx)
-            .themes()
-            .get(name.as_str())
-            .cloned()
-        {
-            Theme::global_mut(cx).apply_config(&cfg);
-            Self::apply_user_font_settings(cx);
-            cx.refresh_windows();
-        }
-    }
-
-    fn commit_theme_selection(&mut self, _cx: &mut Context<Self>) {
-        if let Some(name) = self.theme_list.get(self.theme_cursor) {
-            let _ = crate::storage::save_theme_name(name);
-        }
-    }
 }
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+
+        // Settings dialog size: large, but capped and viewport-relative so it
+        // fits on small windows.
+        let viewport = window.viewport_size();
+        let clamp_px = |value: Pixels, lo: f32, hi: f32| {
+            if value < px(lo) {
+                px(lo)
+            } else if value > px(hi) {
+                px(hi)
+            } else {
+                value
+            }
+        };
+        let settings_w = clamp_px(viewport.width * 0.7, 480.0, 860.0);
+        let settings_h = clamp_px(viewport.height * 0.8, 420.0, 720.0);
 
         let theme_picker_open = self.theme_picker_open;
 
@@ -941,7 +437,10 @@ impl Render for AppView {
             .size_full()
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle)
+            // Swallows keys whose old binding was reassigned (see shadow_shortcut_key).
+            .on_action(cx.listener(|_this, _: &ShortcutNoOp, _window, _cx| {}))
             .on_action(cx.listener(|this, _: &ThemePicker, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 if this.theme_picker_open {
                     this.restore_original_theme(cx);
                     this.close_theme_picker(window, cx);
@@ -950,18 +449,23 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.open_settings(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.close_settings(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NextApi, _window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.select_adjacent_api(1, cx);
             }))
             .on_action(cx.listener(|this, _: &PrevApi, _window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.select_adjacent_api(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &ApiPicker, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 if this.api_picker_open {
                     this.close_api_picker(window, cx);
                 } else {
@@ -969,6 +473,7 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this, _: &FocusCollectionPanel, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.collection_panel.read(cx).focus_handle(cx);
                 cx.defer_in(window, move |_, window, cx| {
@@ -977,6 +482,7 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusRequestPanel, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.request_panel.read(cx).focus_handle(cx);
                 cx.defer_in(window, move |_, window, cx| {
@@ -985,6 +491,7 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusResponsePanel, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.response_panel.read(cx).focus_handle(cx);
                 cx.defer_in(window, move |_, window, cx| {
@@ -993,6 +500,7 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusUrl, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 this.request_panel.update(cx, |panel, cx| {
                     panel.focus_url(window, cx);
@@ -1000,11 +508,13 @@ impl Render for AppView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SendRequest, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 this.request_panel.update(cx, |panel, cx| {
                     panel.send_request(window, cx);
                 });
             }))
             .on_action(cx.listener(|this, _: &ToggleMaximize, window, cx| {
+                if this.recording_shortcut.is_some() { return; }
                 if this.maximized_panel != MaximizedPanel::None {
                     this.maximized_panel = MaximizedPanel::None;
                 } else {
@@ -1124,6 +634,13 @@ impl Render for AppView {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_theme_picker(window, cx);
+                            }),
+                        )
                         .child(
                             div()
                                 .id("theme-picker-panel")
@@ -1135,6 +652,7 @@ impl Render for AppView {
                                 .rounded_lg()
                                 .shadow_lg()
                                 .overflow_hidden()
+                                .occlude()
                                 .track_focus(&self.theme_focus)
                                 .on_key_down(cx.listener(
                                     |this, event: &KeyDownEvent, window, cx| {
@@ -1212,6 +730,13 @@ impl Render for AppView {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_api_picker(window, cx);
+                            }),
+                        )
                         .child(
                             div()
                                 .id("api-picker-panel")
@@ -1226,6 +751,7 @@ impl Render for AppView {
                                 .rounded_lg()
                                 .shadow_lg()
                                 .overflow_hidden()
+                                .occlude()
                                 .on_key_down(cx.listener(
                                     |this, event: &KeyDownEvent, window, cx| {
                                         let n = this.api_list.len();
@@ -1321,6 +847,13 @@ impl Render for AppView {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_font_picker(window, cx);
+                            }),
+                        )
                         .child(
                             div()
                                 .id("font-picker-panel")
@@ -1335,6 +868,7 @@ impl Render for AppView {
                                 .rounded_lg()
                                 .shadow_lg()
                                 .overflow_hidden()
+                                .occlude()
                                 .on_key_down(cx.listener(
                                     move |this, event: &KeyDownEvent, window, cx| {
                                         let n = this.font_list.len();
@@ -1499,17 +1033,31 @@ impl Render for AppView {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .bg(cx.theme().background.opacity(0.72))
+                        // Backdrop: block clicks reaching the app behind and
+                        // close the dialog on an outside click.
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_settings(window, cx);
+                            }),
+                        )
                         .child(
                             div()
                                 .id("settings-panel")
-                                .w(px(600.))
-                                .h(px(500.))
+                                .w(settings_w)
+                                .h(settings_h)
                                 .bg(cx.theme().background)
                                 .border_1()
                                 .border_color(cx.theme().border)
                                 .rounded_lg()
                                 .shadow_lg()
                                 .overflow_hidden()
+                                // Swallow clicks inside the panel so they don't
+                                // fall through to the backdrop and close it.
+                                .occlude()
+                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
                                 .track_focus(&self.settings_focus)
                                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                                     if event.keystroke.key == "escape" {
@@ -1542,8 +1090,30 @@ impl Render for AppView {
                                             div().id("settings-scroll").flex_1().overflow_y_scroll().p_4()
                                                 .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Keybindings"))
                                                 .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("Click a shortcut, then press the keys (Enter is allowed). Esc cancels."),
+                                                )
+                                                .child(
                                                     v_flex().gap_2().mt_2()
                                                         .children(self.shortcut_inputs.iter().map(|shortcut| {
+                                                            let spec = shortcut.spec.clone();
+                                                            let recording =
+                                                                self.recording_shortcut.as_deref() == Some(spec.id);
+                                                            let current = shortcut.input.read(cx).value().to_string();
+                                                            let label_text = if recording {
+                                                                "Press keys…".to_string()
+                                                            } else if current.trim().is_empty() {
+                                                                "Unassigned".to_string()
+                                                            } else {
+                                                                current.clone()
+                                                            };
+                                                            let capture_input = shortcut.input.clone();
+                                                            let capture_spec = spec.clone();
+                                                            let reset_input = shortcut.input.clone();
+                                                            let reset_spec = spec.clone();
+                                                            let start_id = spec.id;
                                                             h_flex()
                                                                 .justify_between()
                                                                 .items_center()
@@ -1552,15 +1122,147 @@ impl Render for AppView {
                                                                     div()
                                                                         .flex_1()
                                                                         .text_sm()
-                                                                        .child(shortcut.spec.label),
+                                                                        .child(spec.label),
                                                                 )
                                                                 .child(
-                                                                    Input::new(&shortcut.input)
-                                                                        .w(px(180.))
-                                                                        .h(px(30.)),
+                                                                    h_flex()
+                                                                        .gap_1()
+                                                                        .items_center()
+                                                                        .child(
+                                                                            div()
+                                                                                .id(SharedString::from(format!("kb-{}", spec.id)))
+                                                                                .w(px(180.))
+                                                                                .h(px(30.))
+                                                                                .px_2()
+                                                                                .flex()
+                                                                                .items_center()
+                                                                                .rounded_md()
+                                                                                .border_1()
+                                                                                .border_color(if recording {
+                                                                                    cx.theme().primary
+                                                                                } else {
+                                                                                    cx.theme().border
+                                                                                })
+                                                                                .bg(if recording {
+                                                                                    cx.theme().primary.opacity(0.1)
+                                                                                } else {
+                                                                                    cx.theme().background
+                                                                                })
+                                                                                .cursor_pointer()
+                                                                                .text_sm()
+                                                                                .font_family("monospace")
+                                                                                .text_color(if recording {
+                                                                                    cx.theme().primary
+                                                                                } else if current.trim().is_empty() {
+                                                                                    cx.theme().muted_foreground
+                                                                                } else {
+                                                                                    cx.theme().foreground
+                                                                                })
+                                                                                .when(recording, |el| {
+                                                                                    el.track_focus(&self.shortcut_capture_focus)
+                                                                                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                                                                                            let ks = &event.keystroke;
+                                                                                            let key = ks.key.as_str();
+                                                                                            cx.stop_propagation();
+                                                                                            if key == "escape" {
+                                                                                                this.cancel_recording_shortcut(cx);
+                                                                                                return;
+                                                                                            }
+                                                                                            if key.is_empty()
+                                                                                                || matches!(key, "control" | "shift" | "alt" | "platform" | "cmd" | "super" | "fn" | "function")
+                                                                                            {
+                                                                                                return;
+                                                                                            }
+                                                                                            // Character keys need Ctrl/Alt/Cmd — Shift alone
+                                                                                            // just makes an uppercase character, so it doesn't
+                                                                                            // count. Named keys (enter, tab, f-keys, arrows, …)
+                                                                                            // are allowed without a modifier.
+                                                                                            let mods = ks.modifiers;
+                                                                                            let has_real_modifier =
+                                                                                                mods.control || mods.alt || mods.platform;
+                                                                                            let is_single_char = key.chars().count() == 1;
+                                                                                            if is_single_char && !has_real_modifier {
+                                                                                                this.shortcut_message = Some(
+                                                                                                    "Use Ctrl or Alt — Shift alone isn't enough for a shortcut.".to_string(),
+                                                                                                );
+                                                                                                cx.notify();
+                                                                                                return;
+                                                                                            }
+                                                                                            let combo = ks.unparse();
+                                                                                            // Enforce uniqueness: reject a combo that is
+                                                                                            // already bound to a different action so one
+                                                                                            // keystroke never maps to two actions. The existing
+                                                                                            // binding is left untouched.
+                                                                                            let taken_by = this
+                                                                                                .shortcut_inputs
+                                                                                                .iter()
+                                                                                                .find(|s| {
+                                                                                                    s.spec.id != capture_spec.id
+                                                                                                        && s.input.read(cx).value().to_string() == combo
+                                                                                                })
+                                                                                                .map(|s| s.spec.label);
+                                                                                            if let Some(label) = taken_by {
+                                                                                                this.shortcut_message = Some(format!(
+                                                                                                    "That shortcut is already used by \"{}\". Pick a different key.",
+                                                                                                    label
+                                                                                                ));
+                                                                                                this.finish_recording_shortcut(cx);
+                                                                                                return;
+                                                                                            }
+                                                                                            this.shortcut_message = None;
+                                                                                            // Disable the previous key so this action
+                                                                                            // doesn't keep responding to both.
+                                                                                            let old_key = capture_input.read(cx).value().to_string();
+                                                                                            Self::shadow_shortcut_key(&old_key, &combo, cx);
+                                                                                            capture_input.update(cx, |state, cx| {
+                                                                                                state.set_value(combo.clone(), window, cx);
+                                                                                            });
+                                                                                            Self::save_shortcut(&capture_spec, &capture_input, cx);
+                                                                                            this.finish_recording_shortcut(cx);
+                                                                                        }))
+                                                                                })
+                                                                                .on_mouse_down(
+                                                                                    MouseButton::Left,
+                                                                                    cx.listener(move |this, _, window, cx| {
+                                                                                        this.start_recording_shortcut(start_id, window, cx);
+                                                                                    }),
+                                                                                )
+                                                                                .child(label_text),
+                                                                        )
+                                                                        .child(
+                                                                            Button::new(SharedString::from(format!("kb-reset-{}", spec.id)))
+                                                                                .icon(IconName::Undo2)
+                                                                                .tooltip("Reset to default")
+                                                                                .ghost()
+                                                                                .xsmall()
+                                                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                                                    let default_key = reset_spec.default_key.to_string();
+                                                                                    // Disable the current key before reverting to default.
+                                                                                    let old_key = reset_input.read(cx).value().to_string();
+                                                                                    Self::shadow_shortcut_key(&old_key, &default_key, cx);
+                                                                                    reset_input.update(cx, |state, cx| {
+                                                                                        state.set_value(default_key, window, cx);
+                                                                                    });
+                                                                                    Self::save_shortcut(&reset_spec, &reset_input, cx);
+                                                                                    if this.recording_shortcut.as_deref() == Some(reset_spec.id) {
+                                                                                        this.finish_recording_shortcut(cx);
+                                                                                    } else {
+                                                                                        cx.notify();
+                                                                                    }
+                                                                                })),
+                                                                        ),
                                                                 )
-                                                        }))
+                                                }))
                                                 )
+                                                .when_some(self.shortcut_message.clone(), |el, message| {
+                                                    el.child(
+                                                        div()
+                                                            .mt_2()
+                                                            .text_xs()
+                                                            .text_color(cx.theme().danger)
+                                                            .child(message),
+                                                    )
+                                                })
                                                 .child(div().mt_6().text_lg().font_weight(gpui::FontWeight::BOLD).child("Appearance"))
                                                 .child(
                                                     v_flex().gap_4().mt_2()
@@ -1627,9 +1329,33 @@ impl Render for AppView {
                                                                 .gap_4()
                                                                 .child("UI Font Size")
                                                                 .child(
-                                                                    Input::new(&self.font_size_input)
-                                                                        .w(px(90.))
-                                                                        .h(px(30.)),
+                                                                    h_flex()
+                                                                        .items_center()
+                                                                        .gap_3()
+                                                                        .child(
+                                                                            div()
+                                                                                .text_xs()
+                                                                                .text_color(cx.theme().muted_foreground)
+                                                                                .child("10"),
+                                                                        )
+                                                                        .child(
+                                                                            div().w(px(160.)).child(
+                                                                                gpui_component::slider::Slider::new(
+                                                                                    &self.font_size_slider,
+                                                                                ),
+                                                                            ),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .text_xs()
+                                                                                .text_color(cx.theme().muted_foreground)
+                                                                                .child("24"),
+                                                                        )
+                                                                        .child(
+                                                                            Input::new(&self.font_size_input)
+                                                                                .w(px(64.))
+                                                                                .h(px(30.)),
+                                                                        ),
                                                                 )
                                                         )
                                                 )
@@ -1649,3 +1375,4 @@ impl Render for AppView {
             .children(notification_layer)
     }
 }
+

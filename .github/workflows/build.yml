@@ -42,15 +42,52 @@ jobs:
       - name: Build
         run: cargo build --release --bin silvapi
 
-      - name: Stage artifact
+      - name: Package AppImage
         run: |
           mkdir -p dist
           cp target/release/silvapi dist/silvapi-linux-x86_64
 
+          # Build an AppDir with the binary, icon and desktop entry.
+          APPDIR=AppDir
+          mkdir -p "$APPDIR/usr/bin" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          cp target/release/silvapi "$APPDIR/usr/bin/silvapi"
+          chmod +x "$APPDIR/usr/bin/silvapi"
+          cp icon/silvapi-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/silvapi.png"
+          cp icon/silvapi-256.png "$APPDIR/silvapi.png"          # AppImage top-level icon
+
+          cat > "$APPDIR/silvapi.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Silvapi
+          Exec=silvapi
+          Icon=silvapi
+          Categories=Development;Utility;
+          Terminal=false
+          DESKTOP
+          cp "$APPDIR/silvapi.desktop" "$APPDIR/usr/share/applications/silvapi.desktop"
+
+          cat > "$APPDIR/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/silvapi" "$@"
+          APPRUN
+          chmod +x "$APPDIR/AppRun"
+
+          # appimagetool (run without FUSE on CI).
+          curl -fL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool "$APPDIR" dist/Silvapi-x86_64.AppImage
+          ls -lh dist/Silvapi-x86_64.AppImage
+
       - uses: actions/upload-artifact@v4
         with:
           name: silvapi-linux-x86_64
-          path: dist/silvapi-linux-x86_64
+          path: |
+            dist/Silvapi-x86_64.AppImage
+            dist/silvapi-linux-x86_64
           if-no-files-found: error
 
   # ── Windows ─────────────────────────────────────────────────────────────────
@@ -104,15 +141,67 @@ jobs:
       - name: Make universal binary
         run: |
           mkdir -p dist
-          lipo -create -output dist/silvapi-macos-universal \
+          lipo -create -output dist/silvapi \
             target/aarch64-apple-darwin/release/silvapi \
             target/x86_64-apple-darwin/release/silvapi
-          lipo -info dist/silvapi-macos-universal
+          lipo -info dist/silvapi
+
+      # Rasterize icon/silvapi.svg → AppIcon.icns at all required sizes.
+      - name: Build app icon
+        run: |
+          brew install librsvg
+          iconset=AppIcon.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            rsvg-convert -w $size        -h $size        icon/silvapi.svg -o "$iconset/icon_${size}x${size}.png"
+            rsvg-convert -w $((size*2))  -h $((size*2))  icon/silvapi.svg -o "$iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns "$iconset" -o AppIcon.icns
+
+      - name: Assemble Silvapi.app
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          APP="dist/Silvapi.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist/silvapi "$APP/Contents/MacOS/silvapi"
+          chmod +x "$APP/Contents/MacOS/silvapi"
+          cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          plist="$APP/Contents/Info.plist"
+          plutil -create xml1 "$plist"
+          pb() { /usr/libexec/PlistBuddy -c "$1" "$plist"; }
+          pb "Add :CFBundleName string Silvapi"
+          pb "Add :CFBundleDisplayName string Silvapi"
+          pb "Add :CFBundleIdentifier string com.silvapi.app"
+          pb "Add :CFBundleExecutable string silvapi"
+          pb "Add :CFBundleIconFile string AppIcon"
+          pb "Add :CFBundleVersion string $VERSION"
+          pb "Add :CFBundleShortVersionString string $VERSION"
+          pb "Add :CFBundlePackageType string APPL"
+          pb "Add :CFBundleInfoDictionaryVersion string 6.0"
+          pb "Add :LSMinimumSystemVersion string 10.15"
+          pb "Add :NSHighResolutionCapable bool true"
+          plutil -lint "$plist"
+          # Ad-hoc sign so the bundle launches (unsigned/unnotarized still needs
+          # the user to clear the quarantine flag — see the DMG note).
+          codesign --force --deep --sign - "$APP" || true
+
+      - name: Create DMG
+        run: |
+          staging=dmg-staging
+          mkdir -p "$staging"
+          cp -R dist/Silvapi.app "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Silvapi" \
+            -srcfolder "$staging" -ov -format UDZO \
+            dist/Silvapi.dmg
+          ls -lh dist/Silvapi.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: silvapi-macos-universal
-          path: dist/silvapi-macos-universal
+          name: silvapi-macos
+          path: |
+            dist/Silvapi.dmg
+            dist/silvapi
           if-no-files-found: error
 
   # ── Release (tags only) ─────────────────────────────────────────────────────

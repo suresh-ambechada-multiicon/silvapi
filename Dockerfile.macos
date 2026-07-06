@@ -1,0 +1,57 @@
+# Best-effort macOS cross-build from Linux.
+#
+# Uses cargo-zigbuild: zig acts as the cross-linker and links against a macOS
+# SDK that YOU supply (extracted from your own Xcode — see scripts/build-macos.sh).
+#
+# KNOWN LIMITATION: GPUI's macOS backend compiles Metal shaders at build time
+# with Apple's `xcrun metal`/`metallib`, which is Apple-only and NOT present
+# here. The build will very likely FAIL at the GPUI shader step. Everything up
+# to that (all pure-Rust crates, framework *linking* via SDK .tbd stubs) works.
+# For a guaranteed working .app, build on real Apple hardware (e.g. GitHub
+# Actions macos-latest runners).
+
+FROM rust:bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    clang \
+    cmake \
+    curl \
+    git \
+    lld \
+    llvm \
+    libclang-dev \
+    pkg-config \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- zig (used by cargo-zigbuild as the cross C/linker toolchain) --------------
+ARG ZIG_VERSION=0.13.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+        x86_64)  zig_arch=x86_64 ;; \
+        aarch64) zig_arch=aarch64 ;; \
+        *) echo "unsupported host arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${zig_arch}-${ZIG_VERSION}.tar.xz" \
+        | tar -xJ -C /opt; \
+    ln -s "/opt/zig-linux-${zig_arch}-${ZIG_VERSION}/zig" /usr/local/bin/zig; \
+    zig version
+
+RUN cargo install cargo-zigbuild --locked
+
+RUN rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# sccache: caches compiled crate outputs across builds (see Dockerfile.compat).
+RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz \
+    | tar -xz -C /tmp \
+    && mv /tmp/sccache-*/sccache /usr/local/bin/sccache \
+    && chmod +x /usr/local/bin/sccache
+
+WORKDIR /work/silvapi
+
+# SDKROOT is exported by the run script to the mounted macOS SDK.
+CMD ["cargo", "zigbuild", "--release", "--target", "aarch64-apple-darwin"]

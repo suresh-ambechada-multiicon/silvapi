@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+    ActiveTheme, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
     h_flex,
@@ -192,30 +192,58 @@ impl RequestPanel {
                                     .item(item(BodyType::None, "No Body"))
                             }),
                     )
-                    .when(matches!(body_type, BodyType::Json), |el| {
+                    .when(Self::is_text_body_type(&body_type), |el| {
+                        let wrap_on = self.body_wrap;
                         el.child(
-                            div().flex_1().flex().justify_end().child(
-                                Button::new("format-json-btn")
-                                    .label("Format JSON")
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let text = this.body_editor.read(cx).value().to_string();
-                                        if let Ok(parsed) =
-                                            serde_json::from_str::<serde_json::Value>(&text)
-                                        {
-                                            if let Ok(pretty) =
-                                                serde_json::to_string_pretty(&parsed)
-                                            {
-                                                this.body_editor.update(cx, |editor, cx| {
-                                                    editor.set_value(pretty, window, cx);
-                                                });
-                                                this.sync_active_request(window, cx);
-                                                cx.notify();
-                                            }
-                                        }
-                                    })),
-                            ),
+                            h_flex()
+                                .flex_1()
+                                .justify_end()
+                                .gap_1()
+                                .child(
+                                    Button::new("wrap-body-btn")
+                                        .icon(IconName::Menu)
+                                        .tooltip(if wrap_on {
+                                            "Word wrap: on"
+                                        } else {
+                                            "Word wrap: off"
+                                        })
+                                        .ghost()
+                                        .xsmall()
+                                        .when(wrap_on, |b| b.selected(true))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.body_wrap = !this.body_wrap;
+                                            let wrap = this.body_wrap;
+                                            this.body_editor.update(cx, |editor, cx| {
+                                                editor.set_soft_wrap(wrap, window, cx);
+                                            });
+                                            cx.notify();
+                                        })),
+                                )
+                                .when(matches!(body_type, BodyType::Json), |el| {
+                                    el.child(
+                                        Button::new("format-json-btn")
+                                            .label("Format JSON")
+                                            .ghost()
+                                            .xsmall()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                let text =
+                                                    this.body_editor.read(cx).value().to_string();
+                                                if let Ok(parsed) =
+                                                    serde_json::from_str::<serde_json::Value>(&text)
+                                                {
+                                                    if let Ok(pretty) =
+                                                        serde_json::to_string_pretty(&parsed)
+                                                    {
+                                                        this.body_editor.update(cx, |editor, cx| {
+                                                            editor.set_value(pretty, window, cx);
+                                                        });
+                                                        this.sync_active_request(window, cx);
+                                                        cx.notify();
+                                                    }
+                                                }
+                                            })),
+                                    )
+                                }),
                         )
                     }),
             )

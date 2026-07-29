@@ -546,6 +546,10 @@ pub struct TimelineEvent {
     pub detail: Option<String>,
 }
 
+/// How much of the outgoing body a snapshot keeps. Enough to debug encoding,
+/// boundaries and content types without copying whole uploads into history.
+pub const REQUEST_BODY_SNAPSHOT_BYTES: usize = 8 * 1024;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HttpResponse {
     pub status: u16,
@@ -555,9 +559,256 @@ pub struct HttpResponse {
     pub time_ms: u64,
     pub size_bytes: usize,
     pub timeline: Vec<TimelineEvent>,
+    #[serde(default)]
+    pub request: Option<RequestSnapshot>,
+    /// Local wall-clock time the attempt started. Pre-formatted by the caller so
+    /// this crate needs no clock dependency.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// Set when the attempt never produced a response (DNS, TLS, timeout,
+    /// cancellation). These entries are still kept in history so failures stay
+    /// debuggable; `status` is 0 for them.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Everything about an outgoing request, captured at send time so a history
+/// entry stays debuggable after the request definition has been edited.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestSnapshot {
+    pub name: String,
+    pub method: HttpMethod,
+    pub url: String,
+    pub resolved_url: String,
+    pub headers: Vec<KeyValue>,
+    pub body_type: BodyType,
+    /// The outgoing body, truncated to `REQUEST_BODY_SNAPSHOT_BYTES`.
+    pub body: String,
+    /// Query and path params as configured, before they were folded into the URL.
+    #[serde(default)]
+    pub params: Vec<KeyValue>,
+    #[serde(default)]
+    pub urlencoded: Vec<KeyValue>,
+    #[serde(default)]
+    pub form_data: Vec<FormDataPartSnapshot>,
+    /// Auth descriptors with every secret value redacted.
+    #[serde(default)]
+    pub auth: Option<AuthSnapshot>,
+    /// Content-Type actually put on the wire.
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// Size of the full assembled body, even when `body` holds only a prefix.
+    #[serde(default)]
+    pub body_bytes: usize,
+    /// True when `body` holds only a leading slice of the real payload.
+    #[serde(default)]
+    pub body_truncated: bool,
+}
+
+impl RequestSnapshot {
+    /// Snapshot built from the request definition alone. Used on the failure
+    /// path, where the request may never have reached body assembly.
+    pub fn from_request(request: &ApiRequest, resolved_url: impl Into<String>) -> Self {
+        Self {
+            name: request.name.clone(),
+            method: request.method.clone(),
+            url: request.url.clone(),
+            resolved_url: resolved_url.into(),
+            headers: request.headers.clone(),
+            body_type: request.body.body_type.clone(),
+            body: request.body.content.clone(),
+            params: request.params.clone(),
+            urlencoded: request.body.urlencoded.clone(),
+            form_data: request
+                .body
+                .form_data
+                .iter()
+                .map(FormDataPartSnapshot::from_part)
+                .collect(),
+            auth: Some(AuthSnapshot::from_config(&request.auth)),
+            content_type: None,
+            body_bytes: request.body.content.len(),
+            body_truncated: false,
+        }
+    }
+
+    /// Record the body that actually went on the wire, keeping only a prefix.
+    pub fn set_wire_body(&mut self, content_type: Option<String>, body: &[u8]) {
+        self.content_type = content_type;
+        self.body_bytes = body.len();
+        let keep = body.len().min(REQUEST_BODY_SNAPSHOT_BYTES);
+        self.body = String::from_utf8_lossy(&body[..keep]).to_string();
+        self.body_truncated = keep < body.len();
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FormDataPartSnapshot {
+    pub name: String,
+    pub kind: FormDataPartKind,
+    pub content_type: String,
+    /// Text value, or the source path for a file part.
+    pub value: String,
+    /// Payload size, when it could be determined.
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    pub enabled: bool,
+}
+
+impl FormDataPartSnapshot {
+    pub fn from_part(part: &FormDataPart) -> Self {
+        let size_bytes = match part.kind {
+            // Resolved at capture time: the file may be gone or changed later,
+            // and the size is what makes a "why is this upload 0 bytes" bug
+            // visible in history.
+            FormDataPartKind::File => std::fs::metadata(&part.value).ok().map(|meta| meta.len()),
+            FormDataPartKind::Text => Some(part.value.len() as u64),
+        };
+        Self {
+            name: part.name.clone(),
+            kind: part.kind.clone(),
+            content_type: part.content_type.clone(),
+            value: part.value.clone(),
+            size_bytes,
+            enabled: part.enabled,
+        }
+    }
+}
+
+/// Auth as captured for history: labelled descriptors only. Secret values are
+/// replaced by [`redact_secret`] at capture time, so credentials are never
+/// written alongside the response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthSnapshot {
+    pub auth_type: AuthType,
+    pub enabled: bool,
+    pub fields: Vec<(String, String)>,
+}
+
+/// Replace a secret with its length, which is what actually helps debugging
+/// ("empty token", "token got truncated") without storing the value.
+pub fn redact_secret(value: &str) -> String {
+    if value.is_empty() {
+        "(empty)".to_string()
+    } else {
+        format!("••• ({} chars)", value.chars().count())
+    }
+}
+
+impl AuthSnapshot {
+    pub fn from_config(auth: &AuthConfig) -> Self {
+        let mut fields: Vec<(String, String)> = Vec::new();
+        match &auth.auth_type {
+            AuthType::None => {}
+            AuthType::Bearer => {
+                fields.push(("Header".into(), "Authorization".into()));
+                fields.push(("Prefix".into(), auth.bearer_prefix.clone()));
+                fields.push(("Token".into(), redact_secret(&auth.bearer_token)));
+            }
+            AuthType::Basic => {
+                fields.push(("Username".into(), auth.basic_username.clone()));
+                fields.push(("Password".into(), redact_secret(&auth.basic_password)));
+            }
+            AuthType::ApiKey => {
+                fields.push(("Key Name".into(), auth.api_key_name.clone()));
+                fields.push((
+                    "Sent In".into(),
+                    if auth.api_key_in_header {
+                        "Header".into()
+                    } else {
+                        "Query".to_string()
+                    },
+                ));
+                fields.push(("Key Value".into(), redact_secret(&auth.api_key_value)));
+            }
+            AuthType::AwsV4 => {
+                fields.push(("Access Key Id".into(), auth.aws_access_key_id.clone()));
+                fields.push((
+                    "Secret Access Key".into(),
+                    redact_secret(&auth.aws_secret_access_key),
+                ));
+                fields.push(("Service".into(), auth.aws_service.clone()));
+                fields.push(("Region".into(), auth.aws_region.clone()));
+                fields.push((
+                    "Session Token".into(),
+                    redact_secret(&auth.aws_session_token),
+                ));
+            }
+            AuthType::Jwt => {
+                fields.push(("Algorithm".into(), auth.jwt_algorithm.clone()));
+                fields.push(("Secret".into(), redact_secret(&auth.jwt_secret)));
+                fields.push(("Secret Base64".into(), auth.jwt_secret_base64.to_string()));
+                fields.push(("Payload".into(), auth.jwt_payload.clone()));
+            }
+            AuthType::OAuth2 => {
+                fields.push(("Grant Type".into(), auth.oauth_grant_type.clone()));
+                fields.push(("Client Id".into(), auth.oauth_client_id.clone()));
+                fields.push((
+                    "Client Secret".into(),
+                    redact_secret(&auth.oauth_client_secret),
+                ));
+                fields.push((
+                    "Authorization URL".into(),
+                    auth.oauth_authorization_url.clone(),
+                ));
+                fields.push((
+                    "Access Token URL".into(),
+                    auth.oauth_access_token_url.clone(),
+                ));
+                fields.push(("Redirect URI".into(), auth.oauth_redirect_uri.clone()));
+                fields.push(("Scope".into(), auth.oauth_scope.clone()));
+                fields.push(("Audience".into(), auth.oauth_audience.clone()));
+                fields.push(("Token Target".into(), auth.oauth_token_target.clone()));
+                fields.push(("Response Type".into(), auth.oauth_response_type.clone()));
+                fields.push(("Use PKCE".into(), auth.oauth_use_pkce.to_string()));
+                fields.push(("Header".into(), auth.oauth_header_name.clone()));
+                fields.push(("Prefix".into(), auth.oauth_header_prefix.clone()));
+                fields.push((
+                    "Send Credentials".into(),
+                    auth.oauth_send_credentials.clone(),
+                ));
+                fields.push(("Username".into(), auth.oauth_username.clone()));
+                fields.push(("Password".into(), redact_secret(&auth.oauth_password)));
+                fields.push(("State".into(), auth.oauth_state.clone()));
+            }
+        }
+        fields.retain(|(_, value)| !value.is_empty());
+        Self {
+            auth_type: auth.auth_type.clone(),
+            enabled: auth.enabled,
+            fields,
+        }
+    }
 }
 
 impl HttpResponse {
+    /// A history entry for an attempt that never produced a response, so
+    /// failures are debuggable from history instead of being dropped.
+    pub fn failed(
+        error: impl Into<String>,
+        time_ms: u64,
+        request: Option<RequestSnapshot>,
+        started_at: Option<String>,
+    ) -> Self {
+        let error = error.into();
+        Self {
+            status: 0,
+            status_text: "Failed".to_string(),
+            headers: Vec::new(),
+            body: String::new(),
+            time_ms,
+            size_bytes: 0,
+            timeline: Vec::new(),
+            request,
+            started_at,
+            error: Some(error),
+        }
+    }
+
+    pub fn is_failure(&self) -> bool {
+        self.error.is_some()
+    }
+
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }

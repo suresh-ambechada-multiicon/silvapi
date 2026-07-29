@@ -215,6 +215,8 @@ impl RequestPanel {
                                             let wrap = this.body_wrap;
                                             this.body_editor.update(cx, |editor, cx| {
                                                 editor.set_soft_wrap(wrap, window, cx);
+                                                let value = editor.value().to_string();
+                                                editor.set_value(value, window, cx);
                                             });
                                             cx.notify();
                                         })),
@@ -250,6 +252,8 @@ impl RequestPanel {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
                     .p_1()
                     .when(matches!(body_type, BodyType::FormData), |el| {
                         el.child(self.render_multipart_form(cx))
@@ -258,7 +262,7 @@ impl RequestPanel {
                         el.child(self.render_urlencoded_form(cx))
                     })
                     .when(Self::is_text_body_type(&body_type), |el| {
-                        el.child(Input::new(&self.body_editor).h_full())
+                        el.child(Input::new(&self.body_editor).h_full().w_full())
                     })
                     .when(
                         !Self::is_text_body_type(&body_type)

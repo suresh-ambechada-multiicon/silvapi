@@ -291,11 +291,24 @@ impl ResponsePanel {
                                     if let Some(history) = state.workspace.response_cache.get(&id) {
                                         for (idx, resp) in history.iter().enumerate().rev() {
                                             let app_state_clone4 = app_state_clone3.clone();
-                                            let label = format!(
-                                                "{} -> {}",
-                                                resp.status,
-                                                format_duration(resp.time_ms)
+                                            let status = if resp.is_failure() {
+                                                "ERR".to_string()
+                                            } else {
+                                                resp.status.to_string()
+                                            };
+                                            let mut label = format!(
+                                                "{}  {}  {}  {}",
+                                                resp.started_at.as_deref().unwrap_or("—"),
+                                                resp.request
+                                                    .as_ref()
+                                                    .map(|req| req.method.as_str())
+                                                    .unwrap_or(""),
+                                                status,
+                                                format_duration(resp.time_ms),
                                             );
+                                            if !resp.is_failure() {
+                                                label.push_str(&format!("  {}", resp.formatted_size()));
+                                            }
                                             menu = menu.item(PopupMenuItem::new(label).on_click(
                                                 move |_, _, cx| {
                                                     app_state_clone4.update(cx, |s, cx| {
@@ -304,6 +317,10 @@ impl ResponsePanel {
                                                                 s.workspace.response_cache.get(id)
                                                             {
                                                                 if let Some(r) = history.get(idx) {
+                                                                    // Clear the live error so the
+                                                                    // selected entry's own outcome
+                                                                    // is what gets rendered.
+                                                                    s.error = None;
                                                                     s.response = Some(r.clone());
                                                                     cx.emit(AppEvent::ResponseReceived);
                                                                 }

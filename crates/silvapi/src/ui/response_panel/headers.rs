@@ -25,21 +25,10 @@ impl ResponsePanel {
     pub(super) fn render_headers_tab(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (sections, source_text) = {
             let state = self.app_state.read(cx);
-            let resolved_url = state
-                .active_request
-                .as_ref()
-                .map(|req| state.interpolate_variables(&req.url));
-            let sections = build_header_sections(
-                state.active_request.as_ref(),
-                state.response.as_ref(),
-                resolved_url.as_deref(),
-            );
+            let request_info = current_header_request_info(&state);
+            let sections = build_header_sections(request_info.clone(), state.response.as_ref());
             let source_text = if self.headers_source_view {
-                format_headers_dump(
-                    state.active_request.as_ref(),
-                    state.response.as_ref(),
-                    resolved_url.as_deref(),
-                )
+                format_headers_dump(request_info, state.response.as_ref())
             } else {
                 String::new()
             };
@@ -134,16 +123,8 @@ impl ResponsePanel {
 
     pub(super) fn current_headers_source_text(&self, cx: &mut Context<Self>) -> String {
         let state = self.app_state.read(cx);
-        let resolved_url = state
-            .active_request
-            .as_ref()
-            .map(|req| state.interpolate_variables(&req.url));
 
-        format_headers_dump(
-            state.active_request.as_ref(),
-            state.response.as_ref(),
-            resolved_url.as_deref(),
-        )
+        format_headers_dump(current_header_request_info(&state), state.response.as_ref())
     }
 
     pub(super) fn render_header_section(
@@ -222,4 +203,47 @@ impl ResponsePanel {
             })
     }
 
+}
+
+fn current_header_request_info(state: &AppState) -> Option<HeaderRequestInfo> {
+    if let Some(snapshot) = state.response.as_ref().and_then(|response| response.request.as_ref()) {
+        return Some(HeaderRequestInfo {
+            method: snapshot.method.as_str().to_string(),
+            url: snapshot.url.clone(),
+            resolved_url: Some(snapshot.resolved_url.clone()),
+            headers: snapshot.headers.clone(),
+            body_type: snapshot.body_type.clone(),
+            body: snapshot.body.clone(),
+            params: snapshot.params.clone(),
+            urlencoded: snapshot.urlencoded.clone(),
+            form_data: snapshot.form_data.clone(),
+            auth: snapshot.auth.clone(),
+            content_type: snapshot.content_type.clone(),
+            body_bytes: snapshot.body_bytes,
+            body_truncated: snapshot.body_truncated,
+        });
+    }
+
+    // No snapshot yet (nothing sent, or a pre-snapshot build): describe the
+    // request as currently configured.
+    state.active_request.as_ref().map(|request| HeaderRequestInfo {
+        method: request.method.as_str().to_string(),
+        url: request.url.clone(),
+        resolved_url: Some(state.interpolate_variables(&request.url)),
+        headers: request.headers.clone(),
+        body_type: request.body.body_type.clone(),
+        body: request.body.content.clone(),
+        params: request.params.clone(),
+        urlencoded: request.body.urlencoded.clone(),
+        form_data: request
+            .body
+            .form_data
+            .iter()
+            .map(silvapi_core::models::FormDataPartSnapshot::from_part)
+            .collect(),
+        auth: Some(silvapi_core::models::AuthSnapshot::from_config(&request.auth)),
+        content_type: None,
+        body_bytes: request.body.content.len(),
+        body_truncated: false,
+    })
 }

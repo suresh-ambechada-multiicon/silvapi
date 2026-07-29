@@ -8,6 +8,14 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
     }
 
     let mut req = ApiRequest::default();
+    // `ApiRequest::default()` seeds JSON Content-Type/Accept headers and a blank
+    // param row, which suit a hand-authored request but not an import: the
+    // result must reflect only what the command says. Keeping the seeded
+    // Content-Type would also put a second, conflicting one on the wire next to
+    // any `-H` the user passed.
+    req.headers.clear();
+    req.params.clear();
+
     let mut i = 0;
 
     // Skip "curl"
@@ -206,3 +214,7 @@ fn tokenize(input: &str) -> Vec<String> {
     }
     tokens
 }
+
+#[cfg(test)]
+#[path = "curl_tests.rs"]
+mod tests;

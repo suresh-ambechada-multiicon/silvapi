@@ -1,7 +1,9 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use silvapi_core::models::{ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue};
+use silvapi_core::models::{
+    ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue, RequestSnapshot,
+};
 
 /// A single shared async `reqwest::Client` so connection pools / DNS caches are
 /// reused across requests instead of rebuilt each time.
@@ -61,16 +63,23 @@ impl HttpClient {
     /// streamed chunk-by-chunk (never fully buffered by us before the caller
     /// sees it); `on_chunk` receives each chunk as it arrives. The task can be
     /// aborted mid-flight for true cancellation.
-    pub async fn execute<F, G>(
+    ///
+    /// `on_request_prepared` fires once the outgoing request is fully assembled
+    /// and before it is sent, handing back the snapshot that history stores. It
+    /// is reported separately so a request that fails in transit still has its
+    /// exact wire form recorded.
+    pub async fn execute<F, G, H>(
         &self,
         request: &ApiRequest,
         resolved_url: &str,
+        mut on_request_prepared: H,
         mut on_response_start: F,
         mut on_chunk: G,
     ) -> Result<HttpResponse, String>
     where
         F: FnMut(HttpResponse),
         G: FnMut(&[u8]),
+        H: FnMut(RequestSnapshot),
     {
         let start = Instant::now();
         let mut timeline = Vec::new();
@@ -193,36 +202,35 @@ impl HttpClient {
             }
         }
 
-        // Body
+        // Body. Assembled into `wire_body` first so the history snapshot can
+        // record exactly what was sent, then moved into the builder.
+        let mut wire_body: Option<Vec<u8>> = None;
+        let mut content_type: Option<String> = None;
+
         match &request.body.body_type {
             BodyType::Json => {
+                content_type = Some("application/json".to_string());
+                wire_body = Some(request.body.content.clone().into_bytes());
                 timeline.push(silvapi_core::models::TimelineEvent {
                     name: "content-type: application/json".to_string(),
                     timestamp: get_time(),
                     icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
-                builder = builder
-                    .header("Content-Type", "application/json")
-                    .body(request.body.content.clone());
             }
             BodyType::Raw => {
-                builder = builder.body(request.body.content.clone());
+                wire_body = Some(request.body.content.clone().into_bytes());
             }
             BodyType::FormData => {
                 let (boundary, body, part_count) = build_multipart_body(request)?;
+                content_type = Some(format!("multipart/form-data; boundary={boundary}"));
                 timeline.push(silvapi_core::models::TimelineEvent {
                     name: format!("multipart/form-data: {} parts", part_count),
                     timestamp: get_time(),
                     icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
-                builder = builder
-                    .header(
-                        "Content-Type",
-                        format!("multipart/form-data; boundary={boundary}"),
-                    )
-                    .body(body);
+                wire_body = Some(body);
             }
             BodyType::UrlEncoded => {
                 let body = if request.body.urlencoded.is_empty() {
@@ -230,31 +238,52 @@ impl HttpClient {
                 } else {
                     build_urlencoded_body(&request.body.urlencoded)
                 };
+                content_type = Some("application/x-www-form-urlencoded".to_string());
                 timeline.push(silvapi_core::models::TimelineEvent {
                     name: "content-type: application/x-www-form-urlencoded".to_string(),
                     timestamp: get_time(),
                     icon: silvapi_core::models::TimelineIcon::Request,
                     detail: None,
                 });
-                builder = builder
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(body);
+                wire_body = Some(body.into_bytes());
             }
             BodyType::BinaryFile => {
                 if !request.body.content.is_empty() {
                     let bytes = std::fs::read(&request.body.content).map_err(|e| e.to_string())?;
+                    content_type = Some("application/octet-stream".to_string());
                     timeline.push(silvapi_core::models::TimelineEvent {
                         name: format!("file body: {}", request.body.content),
                         timestamp: get_time(),
                         icon: silvapi_core::models::TimelineIcon::Request,
                         detail: None,
                     });
-                    builder = builder
-                        .header("Content-Type", "application/octet-stream")
-                        .body(bytes);
+                    wire_body = Some(bytes);
                 }
             }
-            _ => {}
+            BodyType::None => {}
+        }
+
+        // The URL as reqwest will actually request it, query params included.
+        let sent_url = if query_params.is_empty() {
+            final_url.clone()
+        } else {
+            reqwest::Url::parse_with_params(&final_url, &query_params)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| final_url.clone())
+        };
+
+        let mut snapshot = RequestSnapshot::from_request(request, sent_url);
+        snapshot.set_wire_body(
+            content_type.clone(),
+            wire_body.as_deref().unwrap_or_default(),
+        );
+        on_request_prepared(snapshot.clone());
+
+        if let Some(content_type) = content_type {
+            builder = builder.header("Content-Type", content_type);
+        }
+        if let Some(body) = wire_body {
+            builder = builder.body(body);
         }
 
         timeline.push(silvapi_core::models::TimelineEvent {
@@ -302,6 +331,9 @@ impl HttpClient {
             time_ms: start.elapsed().as_millis() as u64,
             size_bytes: 0,
             timeline: timeline.clone(),
+            request: Some(snapshot.clone()),
+            started_at: None,
+            error: None,
         });
 
         let mut body_bytes = Vec::new();
@@ -338,6 +370,9 @@ impl HttpClient {
             time_ms: total_ms,
             size_bytes,
             timeline,
+            request: Some(snapshot),
+            started_at: None,
+            error: None,
         })
     }
 }

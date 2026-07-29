@@ -569,6 +569,15 @@ impl RequestPanel {
         self.sync_auth_inputs_to_config(&mut req.auth, cx);
 
         let resolved_url = self.app_state.read(cx).interpolate_variables(&req.url);
+        // Fallback snapshot for a request that dies before `execute` assembles
+        // the wire form (bad URL, unreadable body file). The real one comes back
+        // over `prepared_rx` and supersedes this.
+        let fallback_snapshot =
+            silvapi_core::models::RequestSnapshot::from_request(&req, resolved_url.clone());
+        let started_at = chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let run_started = Instant::now();
         let response_request_id = self
             .app_state
             .read(cx)
@@ -610,6 +619,8 @@ impl RequestPanel {
 
         let (initial_tx, initial_rx) =
             futures::channel::oneshot::channel::<silvapi_core::models::HttpResponse>();
+        let (prepared_tx, prepared_rx) =
+            futures::channel::oneshot::channel::<silvapi_core::models::RequestSnapshot>();
         let (chunk_tx, mut chunk_rx) = futures::channel::mpsc::unbounded::<String>();
         let (done_tx, done_rx) =
             futures::channel::oneshot::channel::<Result<silvapi_core::models::HttpResponse, String>>();
@@ -617,12 +628,18 @@ impl RequestPanel {
         let join = crate::runtime::spawn(async move {
             let client = crate::http::HttpClient::new();
             let mut initial_tx = Some(initial_tx);
+            let mut prepared_tx = Some(prepared_tx);
             let chunk_tx_clone = chunk_tx.clone();
 
             let result = client
                 .execute(
                     &req,
                     &resolved_url,
+                    |snapshot| {
+                        if let Some(tx) = prepared_tx.take() {
+                            let _ = tx.send(snapshot);
+                        }
+                    },
                     |initial_resp| {
                         if let Some(tx) = initial_tx.take() {
                             let _ = tx.send(initial_resp);
@@ -649,7 +666,13 @@ impl RequestPanel {
         let done_request_id = response_request_id.clone();
         cx.spawn(async move |_, mut cx| {
             use futures::StreamExt;
-            if let Ok(initial_resp) = initial_rx.await {
+            // Resolves before the request is sent. Cancelled (=> `None`) only when
+            // the request died during assembly, in which case the definition-only
+            // fallback is the best record we have.
+            let request_snapshot = prepared_rx.await.ok().unwrap_or(fallback_snapshot);
+
+            if let Ok(mut initial_resp) = initial_rx.await {
+                initial_resp.started_at = Some(started_at.clone());
                 let _ = cx.update(|cx| {
                     app_state.update(cx, |state, cx| {
                         let run_is_current =
@@ -712,35 +735,44 @@ impl RequestPanel {
                         let run_is_current = state.is_request_run_current(&done_request_id, run_id);
                         state.request_finished(&done_request_id, run_id, &result);
                         if run_is_current {
-                            match result {
-                                Ok(resp) => {
-                                    let history = state
-                                        .workspace
-                                        .response_cache
-                                        .entry(done_request_id.clone())
-                                        .or_default();
-                                    history.push(resp.clone());
-                                    let overflow = history
-                                        .len()
-                                        .saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
-                                    if overflow > 0 {
-                                        history.drain(0..overflow);
-                                    }
-                                    response_to_store =
-                                        Some((done_request_id.clone(), resp.clone()));
-                                    if state
-                                        .is_active_response_target(&Some(done_request_id.clone()))
-                                    {
-                                        state.response = Some(resp);
-                                    }
-                                }
-                                Err(e) => {
-                                    if state
-                                        .is_active_response_target(&Some(done_request_id.clone()))
-                                    {
+                            // Failures are recorded too, so a timeout or TLS
+                            // error stays inspectable in history alongside the
+                            // request that caused it.
+                            let (mut resp, error) = match result {
+                                Ok(resp) => (resp, None),
+                                Err(e) => (
+                                    silvapi_core::models::HttpResponse::failed(
+                                        e.clone(),
+                                        run_started.elapsed().as_millis() as u64,
+                                        None,
+                                        None,
+                                    ),
+                                    Some(e),
+                                ),
+                            };
+                            resp.request = Some(request_snapshot.clone());
+                            resp.started_at = Some(started_at.clone());
+
+                            let history = state
+                                .workspace
+                                .response_cache
+                                .entry(done_request_id.clone())
+                                .or_default();
+                            history.push(resp.clone());
+                            let overflow =
+                                history.len().saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
+                            if overflow > 0 {
+                                history.drain(0..overflow);
+                            }
+                            response_to_store = Some((done_request_id.clone(), resp.clone()));
+
+                            if state.is_active_response_target(&Some(done_request_id.clone())) {
+                                match error {
+                                    Some(e) => {
                                         state.error = Some(e);
                                         state.response = None;
                                     }
+                                    None => state.response = Some(resp),
                                 }
                             }
                         }
@@ -1053,4 +1085,3 @@ fn default_if_empty(value: &str, default: &str) -> String {
 
 #[cfg(test)]
 mod tests;
-

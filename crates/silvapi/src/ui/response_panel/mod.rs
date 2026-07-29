@@ -3,17 +3,20 @@ use std::collections::HashSet;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable as _,
-    button::ButtonVariants as _,
+    ActiveTheme, IconName, Sizable as _, Size,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputEvent, InputState},
-    resizable::ResizableState,
+    resizable::{ResizableState, resizable_panel, v_resizable},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
+    table::{DataTable, TableState},
     text::TextView,
     v_flex,
 };
 
 use crate::state::{AppEvent, AppState};
+use json_table::JsonTableDelegate;
 
 
 const STREAM_PREVIEW_BYTES: usize = 96 * 1024;
@@ -33,9 +36,85 @@ struct HeaderSection {
     rows: Vec<(String, String)>,
 }
 
+#[derive(Clone)]
+struct HeaderRequestInfo {
+    method: String,
+    url: String,
+    resolved_url: Option<String>,
+    headers: Vec<silvapi_core::models::KeyValue>,
+    body_type: silvapi_core::models::BodyType,
+    body: String,
+    params: Vec<silvapi_core::models::KeyValue>,
+    urlencoded: Vec<silvapi_core::models::KeyValue>,
+    form_data: Vec<silvapi_core::models::FormDataPartSnapshot>,
+    auth: Option<silvapi_core::models::AuthSnapshot>,
+    content_type: Option<String>,
+    body_bytes: usize,
+    body_truncated: bool,
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024. * 1024.))
+    }
+}
+
+/// Rows describing the request payload: content type, size, the body itself,
+/// and the structured parts behind it for urlencoded / multipart bodies.
+fn payload_rows(req: &HeaderRequestInfo) -> Vec<(String, String)> {
+    let mut rows = vec![("Body Type".to_string(), format!("{:?}", req.body_type))];
+    if let Some(content_type) = req.content_type.as_deref() {
+        rows.push(("Content-Type".to_string(), content_type.to_string()));
+    }
+    if req.body_bytes > 0 {
+        rows.push(("Body Size".to_string(), format_bytes(req.body_bytes as u64)));
+    }
+
+    for part in req.form_data.iter().filter(|part| part.enabled) {
+        let kind = format!("{:?}", part.kind);
+        let size = part
+            .size_bytes
+            .map(|size| format!(" · {}", format_bytes(size)))
+            .unwrap_or_default();
+        let content_type = if part.content_type.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", part.content_type)
+        };
+        rows.push((
+            format!("Part: {}", part.name),
+            format!("{kind}{content_type}{size} · {}", part.value),
+        ));
+    }
+
+    for pair in req.urlencoded.iter().filter(|pair| pair.enabled) {
+        rows.push((format!("Field: {}", pair.key), pair.value.clone()));
+    }
+
+    if !req.body.trim().is_empty() {
+        let label = if req.body_truncated {
+            format!(
+                "Body (first {} of {})",
+                format_bytes(req.body.len() as u64),
+                format_bytes(req.body_bytes as u64)
+            )
+        } else {
+            "Body".to_string()
+        };
+        rows.push((label, req.body.clone()));
+    }
+
+    rows
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseTab {
     Response,
+    Table,
     Preview,
     Headers,
     Timeline,
@@ -45,17 +124,19 @@ impl ResponseTab {
     fn index(&self) -> usize {
         match self {
             ResponseTab::Response => 0,
-            ResponseTab::Preview => 1,
-            ResponseTab::Headers => 2,
-            ResponseTab::Timeline => 3,
+            ResponseTab::Table => 1,
+            ResponseTab::Preview => 2,
+            ResponseTab::Headers => 3,
+            ResponseTab::Timeline => 4,
         }
     }
 
     fn from_index(i: usize) -> Self {
         match i {
             0 => ResponseTab::Response,
-            1 => ResponseTab::Preview,
-            2 => ResponseTab::Headers,
+            1 => ResponseTab::Table,
+            2 => ResponseTab::Preview,
+            3 => ResponseTab::Headers,
             _ => ResponseTab::Timeline,
         }
     }
@@ -67,6 +148,7 @@ pub struct ResponsePanel {
     response_editor: Entity<InputState>,
     sse_detail_editor: Entity<InputState>,
     headers_editor: Entity<InputState>,
+    table_search_input: Entity<InputState>,
     response_text: String,
     soft_wrap: bool,
     response_editor_plain: bool,
@@ -74,6 +156,15 @@ pub struct ResponsePanel {
     sse_detail_column_layout: bool,
     headers_source_view: bool,
     headers_soft_wrap: bool,
+    /// Rebuilt whenever the response body changes; `None` when the body is not
+    /// tabular JSON, which also hides the Table tab.
+    json_table: Option<Entity<TableState<JsonTableDelegate>>>,
+    /// Keeps the panel re-rendering as the table's own selection/sort changes.
+    json_table_sub: Option<Subscription>,
+    /// Detail panel occupies the whole Table tab, hiding the grid.
+    json_detail_maximized: bool,
+    /// Drag position of the grid/detail split.
+    json_detail_resize: Entity<ResizableState>,
     collapsed_header_sections: HashSet<&'static str>,
     _subs: Vec<Subscription>,
     selected_timeline_event: Option<usize>,
@@ -94,6 +185,7 @@ impl Focusable for ResponsePanel {
 
 mod body_view;
 mod headers;
+mod json_table;
 mod preview;
 mod timeline;
 
@@ -126,6 +218,8 @@ impl ResponsePanel {
                 .placeholder("Headers")
                 .soft_wrap(false)
         });
+        let table_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search table..."));
 
         let focus_handle = cx.focus_handle();
 
@@ -135,6 +229,7 @@ impl ResponsePanel {
             response_editor: response_editor.clone(),
             sse_detail_editor,
             headers_editor,
+            table_search_input: table_search_input.clone(),
             response_text: String::new(),
             soft_wrap: true,
             response_editor_plain: false,
@@ -142,6 +237,10 @@ impl ResponsePanel {
             sse_detail_column_layout: false,
             headers_source_view: false,
             headers_soft_wrap: false,
+            json_table: None,
+            json_table_sub: None,
+            json_detail_maximized: false,
+            json_detail_resize: cx.new(|_| ResizableState::default()),
             collapsed_header_sections: HashSet::new(),
             _subs: Vec::new(),
             selected_timeline_event: None,
@@ -162,6 +261,8 @@ impl ResponsePanel {
                 }
 
                 if matches!(ev, AppEvent::ResponseReceived | AppEvent::RequestSelected) {
+                    this.rebuild_json_table(window, cx);
+
                     let (is_loading, body_len, preview_text) = {
                         let state = app_state.read(cx);
                         let body = state
@@ -267,11 +368,32 @@ impl ResponsePanel {
                 }
             },
         );
+        let table_search_sub = cx.subscribe_in(
+            &table_search_input,
+            window,
+            |this: &mut ResponsePanel, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let query = this.table_query(cx);
+                    if let Some(table) = this.json_table.clone() {
+                        table.update(cx, |state, cx| {
+                            if state.delegate_mut().set_query(&query) {
+                                // Row indices shift under the filter, so the
+                                // old selection no longer points at its value.
+                                state.clear_selection(cx);
+                                state.refresh(cx);
+                            }
+                        });
+                    }
+                    cx.notify();
+                }
+            },
+        );
         this._subs = vec![
             app_sub,
             response_editor_sub,
             headers_editor_sub,
             sse_detail_editor_sub,
+            table_search_sub,
         ];
         this
     }
@@ -305,8 +427,12 @@ impl Render for ResponsePanel {
                     .iter()
                     .any(|(k, v)| k.to_lowercase() == "content-type" && v.contains("text/html"))
             });
+        let has_json_table = self.json_table.is_some();
 
         let mut visible_tabs = vec![ResponseTab::Response];
+        if has_json_table {
+            visible_tabs.push(ResponseTab::Table);
+        }
         if is_html {
             visible_tabs.push(ResponseTab::Preview);
         }
@@ -314,6 +440,9 @@ impl Render for ResponsePanel {
         visible_tabs.push(ResponseTab::Timeline);
 
         if self.active_tab == ResponseTab::Preview && !is_html {
+            self.active_tab = ResponseTab::Response;
+        }
+        if self.active_tab == ResponseTab::Table && !has_json_table {
             self.active_tab = ResponseTab::Response;
         }
         let active_tab = self.active_tab;
@@ -326,6 +455,19 @@ impl Render for ResponsePanel {
             .size_full()
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle)
+            // Shift+Escape also full-screens an open value detail. Deliberately
+            // does not stop propagation: AppView still maximizes the response
+            // panel, so one press gives the value the whole window rather than
+            // trading the panel maximize away for it.
+            .on_action(cx.listener(
+                |this, _: &crate::ui::actions::ToggleMaximize, _, cx| {
+                    if this.active_tab != ResponseTab::Table || !this.json_detail_open(cx) {
+                        return;
+                    }
+                    this.json_detail_maximized = !this.json_detail_maximized;
+                    cx.notify();
+                },
+            ))
             .border_l_1()
             .border_color(cx.theme().border)
             .child(self.render_status_bar(cx))
@@ -344,6 +486,7 @@ impl Render for ResponsePanel {
                 for t in &visible_tabs {
                     let label = match t {
                         ResponseTab::Response => "Response",
+                        ResponseTab::Table => "Table",
                         ResponseTab::Preview => "Preview",
                         ResponseTab::Headers => "Headers",
                         ResponseTab::Timeline => "Timeline",
@@ -357,7 +500,14 @@ impl Render for ResponsePanel {
                     .flex_1()
                     .overflow_hidden()
                     .when(active_tab == ResponseTab::Response, |el| {
-                        if let Some(err) = &self.app_state.read(cx).error {
+                        // A failed history entry carries its own error, so
+                        // selecting one shows that failure rather than the live
+                        // request's (or nothing at all).
+                        let state = self.app_state.read(cx);
+                        let error = state.error.clone().or_else(|| {
+                            state.response.as_ref().and_then(|resp| resp.error.clone())
+                        });
+                        if let Some(err) = &error {
                             el.child(
                                 div()
                                     .size_full()
@@ -410,6 +560,12 @@ impl Render for ResponsePanel {
                     .when(active_tab == ResponseTab::Preview, |el| {
                         el.child(self.render_preview_tab(cx))
                     })
+                    .when(active_tab == ResponseTab::Table, |el| {
+                        match self.render_json_table_tab(cx) {
+                            Some(table) => el.child(table),
+                            None => el,
+                        }
+                    })
                     .when(active_tab == ResponseTab::Headers, |el| {
                         el.child(self.render_headers_tab(_window, cx))
                     })
@@ -417,6 +573,273 @@ impl Render for ResponsePanel {
                         el.child(self.render_timeline_tab(cx))
                     }),
             )
+    }
+}
+
+impl ResponsePanel {
+    fn current_json_value(&self, cx: &App) -> Option<serde_json::Value> {
+        let body = self
+            .app_state
+            .read(cx)
+            .response
+            .as_ref()
+            .map(|response| response.body.trim().to_string())?;
+        if body.len() > FORMAT_RESPONSE_LIMIT_BYTES
+            || !(body.starts_with('{') || body.starts_with('['))
+        {
+            return None;
+        }
+        serde_json::from_str(&body).ok()
+    }
+
+    /// Rebuild the Table tab's state from the current response body. Called on
+    /// every response/selection change so the tab visibility and the table data
+    /// stay in sync without re-parsing the body on each frame.
+    fn rebuild_json_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let delegate = self
+            .current_json_value(cx)
+            .as_ref()
+            .and_then(JsonTableDelegate::from_json);
+
+        self.json_detail_maximized = false;
+
+        let Some(mut delegate) = delegate else {
+            self.json_table = None;
+            self.json_table_sub = None;
+            return;
+        };
+
+        delegate.set_query(&self.table_query(cx));
+        let table = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .cell_selectable(true)
+                .row_header(false)
+                .col_resizable(true)
+                .col_movable(true)
+                .sortable(true)
+        });
+        self.json_table_sub = Some(cx.observe(&table, |_, _, cx| cx.notify()));
+        self.json_table = Some(table);
+    }
+
+    /// True when a cell is selected, so the detail panel has something to show.
+    fn json_detail_open(&self, cx: &App) -> bool {
+        self.json_table
+            .as_ref()
+            .is_some_and(|table| table.read(cx).selected_cell().is_some())
+    }
+
+    fn render_json_table_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let table = self.json_table.clone()?;
+        let grid = div().size_full().min_h(px(0.)).p_1().child(
+            // Stripes off: the table pads its viewport with blank filler rows,
+            // and striping makes those read as data.
+            DataTable::new(&table)
+                .stripe(false)
+                .bordered(true)
+                .with_size(Size::Small),
+        );
+
+        let body = match self.render_json_table_detail(&table, cx) {
+            // Full screen: the detail takes the tab. The table's column widths
+            // and selection live in the TableState entity, so they survive the
+            // toggle even though the grid is not rendered.
+            Some(detail) if self.json_detail_maximized => {
+                div().size_full().child(detail).into_any_element()
+            }
+            Some(detail) => v_resizable("json-table-detail-split")
+                .with_state(&self.json_detail_resize)
+                .child(
+                    resizable_panel()
+                        .size(px(320.))
+                        .size_range(px(120.)..px(1600.))
+                        .child(grid),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(260.))
+                        .size_range(px(80.)..px(1200.))
+                        .child(detail),
+                )
+                .into_any_element(),
+            None => grid.into_any_element(),
+        };
+
+        Some(
+            v_flex()
+                .size_full()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .child(self.render_json_table_toolbar(&table, cx))
+                .child(div().flex_1().min_h(px(0.)).child(body))
+                .into_any_element(),
+        )
+    }
+
+    fn render_json_table_toolbar(
+        &self,
+        table: &Entity<TableState<JsonTableDelegate>>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let delegate = table.read(cx).delegate();
+        let visible = delegate.visible_count();
+        let total = delegate.total_count();
+        let truncated = delegate.truncated_rows();
+
+        let mut summary = if visible == total {
+            format!("{total} rows")
+        } else {
+            format!("{visible} of {total} rows")
+        };
+        if truncated > 0 {
+            summary.push_str(&format!(" · {truncated} not shown"));
+        }
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().w(px(260.)).child(Input::new(&self.table_search_input)))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(summary),
+            )
+            .child(div().flex_1())
+    }
+
+    /// The detail panel below the table. `DataTable` rows are a uniform height,
+    /// so this is where a long value is shown in full (and copied from) instead
+    /// of a hover button inside the cell.
+    fn render_json_table_detail(
+        &self,
+        table: &Entity<TableState<JsonTableDelegate>>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = table.read(cx);
+        let (row_ix, col_ix) = state.selected_cell()?;
+        let delegate = state.delegate();
+        let value = delegate.cell(row_ix, col_ix)?.to_string();
+        let column = delegate.column_name(col_ix).unwrap_or_default();
+        let heading = match delegate.row_label(row_ix) {
+            Some(label) if label != column.as_ref() => format!("{label} · {column}"),
+            _ => column.to_string(),
+        };
+        let row_json = delegate.row_json(row_ix);
+        let maximized = self.json_detail_maximized;
+        let table = table.clone();
+
+        Some(
+            v_flex()
+                // Sized by the resizable split (or the whole tab when full
+                // screen), so the panel takes all the height it is given.
+                .size_full()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.12))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(heading),
+                        )
+                        .child(
+                            Button::new("json-table-copy-value")
+                                .label("copy value")
+                                .ghost()
+                                .xsmall()
+                                .on_click({
+                                    let value = value.clone();
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            value.clone(),
+                                        ));
+                                    }
+                                }),
+                        )
+                        .children(row_json.map(|row_json| {
+                            Button::new("json-table-copy-row")
+                                .label("copy row")
+                                .ghost()
+                                .xsmall()
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        row_json.clone(),
+                                    ));
+                                })
+                        }))
+                        .child(
+                            Button::new("json-table-detail-maximize")
+                                .label(if maximized { "restore" } else { "full screen" })
+                                .tooltip("Shift+Escape")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.json_detail_maximized = !this.json_detail_maximized;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("json-table-close-detail")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.json_detail_maximized = false;
+                                    table.update(cx, |state, cx| state.clear_selection(cx));
+                                })),
+                        ),
+                )
+                // Two levels on purpose. `overflow_y_scrollbar` copies its
+                // element's sizing onto a wrapper that it also gives
+                // `size_full`, so a `flex_1` scroll area resolves against the
+                // panel's whole height and ignores the header row above it,
+                // overflowing instead of scrolling. The outer div claims the
+                // leftover space; the inner one takes a definite `size_full`
+                // from it, which is what the scroll area needs to overflow
+                // against.
+                .child(
+                    div().w_full().flex_1().min_h(px(0.)).overflow_hidden().child(
+                        div()
+                            .id("json-table-detail-body")
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .px_2()
+                            .pb_2()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .whitespace_normal()
+                            .child(value),
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn table_query(&self, cx: &App) -> String {
+        self.table_search_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase()
     }
 }
 
@@ -441,31 +864,35 @@ fn format_duration(ms: u64) -> String {
 }
 
 fn build_header_sections(
-    req: Option<&silvapi_core::models::ApiRequest>,
+    req: Option<HeaderRequestInfo>,
     res: Option<&silvapi_core::models::HttpResponse>,
-    resolved_url: Option<&str>,
 ) -> Vec<HeaderSection> {
     let mut sections = Vec::new();
     let mut general = Vec::new();
 
-    if let Some(req) = req {
+    if let Some(req) = req.as_ref() {
         general.push((
             "Request URL".to_string(),
-            resolved_url
+            req.resolved_url
+                .as_deref()
                 .filter(|url| !url.is_empty())
                 .unwrap_or(&req.url)
                 .to_string(),
         ));
-        if resolved_url.is_some_and(|url| url != req.url) {
+        if req
+            .resolved_url
+            .as_deref()
+            .is_some_and(|url| url != req.url)
+        {
             general.push(("Original URL".to_string(), req.url.clone()));
         }
-        general.push((
-            "Request Method".to_string(),
-            req.method.as_str().to_string(),
-        ));
+        general.push(("Request Method".to_string(), req.method.clone()));
     }
 
     if let Some(res) = res {
+        if let Some(started_at) = res.started_at.as_deref() {
+            general.push(("Sent At".to_string(), started_at.to_string()));
+        }
         let status = if res.status_text.is_empty() {
             res.status.to_string()
         } else {
@@ -474,6 +901,9 @@ fn build_header_sections(
         general.push(("Status Code".to_string(), status));
         general.push(("Time".to_string(), format_duration(res.time_ms)));
         general.push(("Size".to_string(), res.formatted_size()));
+        if let Some(error) = res.error.as_deref() {
+            general.push(("Error".to_string(), error.to_string()));
+        }
     }
     general.push(("Version".to_string(), "HTTP/1.1".to_string()));
     sections.push(HeaderSection {
@@ -490,7 +920,7 @@ fn build_header_sections(
         });
     }
 
-    if let Some(req) = req {
+    if let Some(req) = req.as_ref() {
         let rows: Vec<(String, String)> = req
             .headers
             .iter()
@@ -503,33 +933,75 @@ fn build_header_sections(
                 rows,
             });
         }
+
+        let params: Vec<(String, String)> = req
+            .params
+            .iter()
+            .filter(|param| param.enabled && !param.key.is_empty())
+            .map(|param| (param.key.clone(), param.value.clone()))
+            .collect();
+        if !params.is_empty() {
+            sections.push(HeaderSection {
+                title: "Query Params",
+                rows: params,
+            });
+        }
+
+        if let Some(auth) = req.auth.as_ref()
+            && !auth.fields.is_empty()
+        {
+            let mut rows = vec![
+                ("Type".to_string(), format!("{:?}", auth.auth_type)),
+                ("Enabled".to_string(), auth.enabled.to_string()),
+            ];
+            rows.extend(auth.fields.iter().cloned());
+            sections.push(HeaderSection {
+                title: "Auth",
+                rows,
+            });
+        }
+
+        let payload = payload_rows(req);
+        if payload.len() > 1 {
+            sections.push(HeaderSection {
+                title: "Request Payload",
+                rows: payload,
+            });
+        }
     }
 
     sections
 }
 
 fn format_headers_dump(
-    req: Option<&silvapi_core::models::ApiRequest>,
+    req: Option<HeaderRequestInfo>,
     res: Option<&silvapi_core::models::HttpResponse>,
-    resolved_url: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
     out.push_str("General\n");
-    if let Some(req) = req {
+    if let Some(req) = req.as_ref() {
         push_header_line(
             &mut out,
             "Request URL",
-            resolved_url
+            req.resolved_url
+                .as_deref()
                 .filter(|url| !url.is_empty())
                 .unwrap_or(&req.url),
         );
-        if resolved_url.is_some_and(|url| url != req.url) {
+        if req
+            .resolved_url
+            .as_deref()
+            .is_some_and(|url| url != req.url)
+        {
             push_header_line(&mut out, "Original URL", &req.url);
         }
-        push_header_line(&mut out, "Request Method", req.method.as_str());
+        push_header_line(&mut out, "Request Method", &req.method);
     }
     if let Some(res) = res {
+        if let Some(started_at) = res.started_at.as_deref() {
+            push_header_line(&mut out, "Sent At", started_at);
+        }
         let status = if res.status_text.is_empty() {
             res.status.to_string()
         } else {
@@ -538,16 +1010,54 @@ fn format_headers_dump(
         push_header_line(&mut out, "Status Code", &status);
         push_header_line(&mut out, "Time", &format_duration(res.time_ms));
         push_header_line(&mut out, "Size", &res.formatted_size());
+        if let Some(error) = res.error.as_deref() {
+            push_header_line(&mut out, "Error", error);
+        }
     }
     push_header_line(&mut out, "Version", "HTTP/1.1");
 
-    if let Some(req) = req
+    if let Some(req) = req.as_ref() {
+        let params: Vec<&silvapi_core::models::KeyValue> = req
+            .params
+            .iter()
+            .filter(|param| param.enabled && !param.key.is_empty())
+            .collect();
+        if !params.is_empty() {
+            out.push_str("\nQuery Params\n");
+            for param in params {
+                push_header_line(&mut out, &param.key, &param.value);
+            }
+        }
+
+        if let Some(auth) = req.auth.as_ref()
+            && !auth.fields.is_empty()
+        {
+            out.push_str("\nAuth\n");
+            push_header_line(&mut out, "Type", &format!("{:?}", auth.auth_type));
+            push_header_line(&mut out, "Enabled", &auth.enabled.to_string());
+            for (key, value) in &auth.fields {
+                push_header_line(&mut out, key, value);
+            }
+        }
+    }
+
+    if let Some(req) = req.as_ref()
         && !req.headers.is_empty()
     {
         out.push_str("\nRequest Headers\n");
         for header in &req.headers {
             if header.enabled && !header.key.is_empty() {
                 push_header_line(&mut out, &header.key, &header.value);
+            }
+        }
+    }
+
+    if let Some(req) = req.as_ref() {
+        let payload = payload_rows(req);
+        if payload.len() > 1 {
+            out.push_str("\nRequest Payload\n");
+            for (key, value) in payload {
+                push_header_line(&mut out, &key, &value);
             }
         }
     }
@@ -732,4 +1242,3 @@ fn try_format_json(body: &str) -> String {
     }
     body.to_string()
 }
-

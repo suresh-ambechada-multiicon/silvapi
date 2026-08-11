@@ -18,7 +18,6 @@ use gpui_component::{
 use crate::state::{AppEvent, AppState};
 use json_table::JsonTableDelegate;
 
-
 const STREAM_PREVIEW_BYTES: usize = 96 * 1024;
 const LARGE_RESPONSE_PREVIEW_BYTES: usize = 128 * 1024;
 const FORMAT_RESPONSE_LIMIT_BYTES: usize = 1024 * 1024;
@@ -163,6 +162,8 @@ pub struct ResponsePanel {
     json_table_sub: Option<Subscription>,
     /// Detail panel occupies the whole Table tab, hiding the grid.
     json_detail_maximized: bool,
+    /// Explicit render mode for selected Markdown-looking cell values.
+    json_detail_render_markdown: bool,
     /// Drag position of the grid/detail split.
     json_detail_resize: Entity<ResizableState>,
     collapsed_header_sections: HashSet<&'static str>,
@@ -181,7 +182,6 @@ impl Focusable for ResponsePanel {
         self.focus_handle.clone()
     }
 }
-
 
 mod body_view;
 mod headers;
@@ -240,6 +240,7 @@ impl ResponsePanel {
             json_table: None,
             json_table_sub: None,
             json_detail_maximized: false,
+            json_detail_render_markdown: false,
             json_detail_resize: cx.new(|_| ResizableState::default()),
             collapsed_header_sections: HashSet::new(),
             _subs: Vec::new(),
@@ -261,8 +262,6 @@ impl ResponsePanel {
                 }
 
                 if matches!(ev, AppEvent::ResponseReceived | AppEvent::RequestSelected) {
-                    this.rebuild_json_table(window, cx);
-
                     let (is_loading, body_len, preview_text) = {
                         let state = app_state.read(cx);
                         let body = state
@@ -278,6 +277,7 @@ impl ResponsePanel {
                     };
 
                     if !is_loading {
+                        this.rebuild_json_table(window, cx);
                         if body_len <= FORMAT_RESPONSE_LIMIT_BYTES {
                             this.ensure_response_editor_mode(false, window, cx);
                             let text = app_state
@@ -324,7 +324,6 @@ impl ResponsePanel {
                         cx.notify();
                     }
                 }
-
             },
         );
         let response_editor_sub = cx.subscribe_in(
@@ -414,7 +413,6 @@ impl ResponsePanel {
     }
 }
 
-
 impl Render for ResponsePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_html = self
@@ -455,19 +453,6 @@ impl Render for ResponsePanel {
             .size_full()
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle)
-            // Shift+Escape also full-screens an open value detail. Deliberately
-            // does not stop propagation: AppView still maximizes the response
-            // panel, so one press gives the value the whole window rather than
-            // trading the panel maximize away for it.
-            .on_action(cx.listener(
-                |this, _: &crate::ui::actions::ToggleMaximize, _, cx| {
-                    if this.active_tab != ResponseTab::Table || !this.json_detail_open(cx) {
-                        return;
-                    }
-                    this.json_detail_maximized = !this.json_detail_maximized;
-                    cx.notify();
-                },
-            ))
             .border_l_1()
             .border_color(cx.theme().border)
             .child(self.render_status_bar(cx))
@@ -602,6 +587,7 @@ impl ResponsePanel {
             .and_then(JsonTableDelegate::from_json);
 
         self.json_detail_maximized = false;
+        self.json_detail_render_markdown = false;
 
         let Some(mut delegate) = delegate else {
             self.json_table = None;
@@ -685,6 +671,7 @@ impl ResponsePanel {
         let visible = delegate.visible_count();
         let total = delegate.total_count();
         let truncated = delegate.truncated_rows();
+        let csv = delegate.visible_csv();
 
         let mut summary = if visible == total {
             format!("{total} rows")
@@ -703,7 +690,11 @@ impl ResponsePanel {
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().w(px(260.)).child(Input::new(&self.table_search_input)))
+            .child(
+                div()
+                    .w(px(260.))
+                    .child(Input::new(&self.table_search_input)),
+            )
             .child(
                 div()
                     .text_xs()
@@ -711,6 +702,16 @@ impl ResponsePanel {
                     .child(summary),
             )
             .child(div().flex_1())
+            .child(
+                Button::new("json-table-copy-csv")
+                    .icon(IconName::File)
+                    .tooltip("Copy visible rows as CSV")
+                    .ghost()
+                    .xsmall()
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(csv.clone()));
+                    }),
+            )
     }
 
     /// The detail panel below the table. `DataTable` rows are a uniform height,
@@ -732,6 +733,8 @@ impl ResponsePanel {
         };
         let row_json = delegate.row_json(row_ix);
         let maximized = self.json_detail_maximized;
+        let markdown_value = looks_like_markdown(&value);
+        let render_markdown = markdown_value && self.json_detail_render_markdown;
         let table = table.clone();
 
         Some(
@@ -763,7 +766,8 @@ impl ResponsePanel {
                         )
                         .child(
                             Button::new("json-table-copy-value")
-                                .label("copy value")
+                                .icon(IconName::Copy)
+                                .tooltip("Copy value")
                                 .ghost()
                                 .xsmall()
                                 .on_click({
@@ -775,9 +779,32 @@ impl ResponsePanel {
                                     }
                                 }),
                         )
+                        .when(markdown_value, |el| {
+                            el.child(
+                                Button::new("json-table-render-markdown")
+                                    .icon(if render_markdown {
+                                        IconName::SquareTerminal
+                                    } else {
+                                        IconName::File
+                                    })
+                                    .tooltip(if render_markdown {
+                                        "Show source"
+                                    } else {
+                                        "Render Markdown"
+                                    })
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.json_detail_render_markdown =
+                                            !this.json_detail_render_markdown;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
                         .children(row_json.map(|row_json| {
                             Button::new("json-table-copy-row")
-                                .label("copy row")
+                                .icon(IconName::Copy)
+                                .tooltip("Copy row as JSON")
                                 .ghost()
                                 .xsmall()
                                 .on_click(move |_, _, cx| {
@@ -788,8 +815,16 @@ impl ResponsePanel {
                         }))
                         .child(
                             Button::new("json-table-detail-maximize")
-                                .label(if maximized { "restore" } else { "full screen" })
-                                .tooltip("Shift+Escape")
+                                .icon(if maximized {
+                                    IconName::WindowRestore
+                                } else {
+                                    IconName::Maximize
+                                })
+                                .tooltip(if maximized {
+                                    "Restore detail"
+                                } else {
+                                    "Expand detail"
+                                })
                                 .ghost()
                                 .xsmall()
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -804,6 +839,7 @@ impl ResponsePanel {
                                 .xsmall()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.json_detail_maximized = false;
+                                    this.json_detail_render_markdown = false;
                                     table.update(cx, |state, cx| state.clear_selection(cx));
                                 })),
                         ),
@@ -817,18 +853,29 @@ impl ResponsePanel {
                 // from it, which is what the scroll area needs to overflow
                 // against.
                 .child(
-                    div().w_full().flex_1().min_h(px(0.)).overflow_hidden().child(
-                        div()
-                            .id("json-table-detail-body")
-                            .size_full()
-                            .overflow_y_scrollbar()
-                            .px_2()
-                            .pb_2()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .whitespace_normal()
-                            .child(value),
-                    ),
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .id("json-table-detail-body")
+                                .size_full()
+                                .overflow_y_scrollbar()
+                                .px_2()
+                                .pb_2()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .whitespace_normal()
+                                .child(if render_markdown {
+                                    TextView::markdown("json-table-detail-markdown", value.clone())
+                                        .selectable(true)
+                                        .into_any_element()
+                                } else {
+                                    div().child(value).into_any_element()
+                                }),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -1120,7 +1167,9 @@ fn response_preview_text(body: &str, is_loading: bool) -> String {
 /// text shaper panics on a newline inside a single text run).
 fn sanitize_html_for_preview(html: &str) -> String {
     let mut out = html.to_string();
-    for tag in ["script", "style", "head", "noscript", "svg", "template", "iframe"] {
+    for tag in [
+        "script", "style", "head", "noscript", "svg", "template", "iframe",
+    ] {
         out = remove_html_blocks(&out, tag);
     }
     out = remove_between(&out, "<!--", "-->");
@@ -1138,7 +1187,10 @@ fn remove_html_blocks(input: &str, tag: &str) -> String {
         let start = pos + rel;
         // Only treat as a real tag if followed by a delimiter (space, >, /, tab).
         let after = lower[start + open.len()..].chars().next();
-        if !matches!(after, Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r') | None) {
+        if !matches!(
+            after,
+            Some(' ') | Some('>') | Some('/') | Some('\t') | Some('\n') | Some('\r') | None
+        ) {
             result.push_str(&input[pos..start + open.len()]);
             pos = start + open.len();
             continue;
@@ -1241,4 +1293,21 @@ fn try_format_json(body: &str) -> String {
         }
     }
     body.to_string()
+}
+
+fn looks_like_markdown(value: &str) -> bool {
+    let text = value.trim();
+    text.contains("```")
+        || text.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("# ")
+                || line.starts_with("## ")
+                || line.starts_with("- ")
+                || line.starts_with("* ")
+                || line.starts_with("> ")
+                || line.starts_with("| ")
+        })
+        || text.contains("**")
+        || text.contains("__")
+        || text.contains("[") && text.contains("](")
 }

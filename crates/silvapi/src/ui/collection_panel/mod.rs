@@ -12,8 +12,8 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::state::{AppEvent, AppState};
 use silvapi_core::models::{AuthType, CollectionItem, Folder, KeyValue};
-use crate::{state::{AppEvent, AppState}};
 
 use super::actions::{FocusActiveRequest, RenameSelected};
 
@@ -169,7 +169,6 @@ impl Focusable for CollectionPanel {
     }
 }
 
-
 mod folder_settings;
 mod tree;
 
@@ -295,9 +294,7 @@ impl CollectionPanel {
             enabled,
         }
     }
-
 }
-
 
 impl Render for CollectionPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -521,8 +518,10 @@ fn format_curl(req: &silvapi_core::models::ApiRequest) -> String {
         }
     }
 
-    let body = if matches!(req.body.body_type, silvapi_core::models::BodyType::UrlEncoded)
-        && !req.body.urlencoded.is_empty()
+    let body = if matches!(
+        req.body.body_type,
+        silvapi_core::models::BodyType::UrlEncoded
+    ) && !req.body.urlencoded.is_empty()
     {
         crate::http::build_urlencoded_body(&req.body.urlencoded)
     } else {
@@ -666,9 +665,7 @@ fn folder_default_if_empty(value: &str, default: &str) -> String {
 fn folder_oauth_grant_label(value: &str) -> &'static str {
     match value {
         "Implicit" => "Implicit",
-        "Resource Owner Password Credential" | "Password" => {
-            "Resource Owner Password Credential"
-        }
+        "Resource Owner Password Credential" | "Password" => "Resource Owner Password Credential",
         "Client Credentials" => "Client Credentials",
         _ => "Authorization Code",
     }
@@ -855,4 +852,3 @@ fn method_color(method: &str) -> Hsla {
         _ => rgb(0x607D8B).into(),
     }
 }
-

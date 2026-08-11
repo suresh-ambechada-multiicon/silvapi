@@ -14,8 +14,10 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::{
+    AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,
+};
 
 use super::*;
 
@@ -236,9 +238,13 @@ impl RequestPanel {
                                                     if let Ok(pretty) =
                                                         serde_json::to_string_pretty(&parsed)
                                                     {
-                                                        this.body_editor.update(cx, |editor, cx| {
-                                                            editor.set_value(pretty, window, cx);
-                                                        });
+                                                        this.body_editor.update(
+                                                            cx,
+                                                            |editor, cx| {
+                                                                editor
+                                                                    .set_value(pretty, window, cx);
+                                                            },
+                                                        );
                                                         this.sync_active_request(window, cx);
                                                         cx.notify();
                                                     }
@@ -613,8 +619,12 @@ impl RequestPanel {
             )
     }
 
-    pub(super) fn update_multipart_part<F>(app_state: &Entity<AppState>, id: &str, cx: &mut App, f: F)
-    where
+    pub(super) fn update_multipart_part<F>(
+        app_state: &Entity<AppState>,
+        id: &str,
+        cx: &mut App,
+        f: F,
+    ) where
         F: FnOnce(&mut FormDataPart),
     {
         app_state.update(cx, |state, cx| {
@@ -643,7 +653,9 @@ impl RequestPanel {
         });
     }
 
-    pub(super) fn urlencoded_fields_for_body(body: &silvapi_core::models::RequestBody) -> Vec<KeyValue> {
+    pub(super) fn urlencoded_fields_for_body(
+        body: &silvapi_core::models::RequestBody,
+    ) -> Vec<KeyValue> {
         if !body.urlencoded.is_empty() {
             body.urlencoded.clone()
         } else if matches!(body.body_type, BodyType::UrlEncoded) {
@@ -766,5 +778,4 @@ impl RequestPanel {
             });
         });
     }
-
 }

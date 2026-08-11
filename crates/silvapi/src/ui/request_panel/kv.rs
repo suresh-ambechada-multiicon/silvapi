@@ -14,8 +14,10 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::{
+    AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,
+};
 
 use super::*;
 
@@ -123,5 +125,4 @@ impl RequestPanel {
             .filter(|kv| !kv.key.is_empty())
             .collect()
     }
-
 }

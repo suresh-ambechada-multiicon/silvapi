@@ -12,8 +12,8 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::models::{AuthType, BodyType,};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::{AuthType, BodyType};
 
 const MAX_RESPONSE_HISTORY_PER_REQUEST: usize = 20;
 
@@ -147,7 +147,6 @@ impl gpui::Focusable for RequestPanel {
     }
 }
 
-
 mod auth;
 mod body;
 mod kv;
@@ -156,6 +155,58 @@ mod url_bar;
 impl RequestPanel {
     fn input_line(value: impl AsRef<str>) -> String {
         value.as_ref().replace(['\r', '\n'], " ")
+    }
+
+    fn request_with_resolved_variables(
+        state: &AppState,
+        mut req: silvapi_core::models::ApiRequest,
+    ) -> silvapi_core::models::ApiRequest {
+        req.url = state.interpolate_variables(&req.url);
+        for param in &mut req.params {
+            param.key = state.interpolate_variables(&param.key);
+            param.value = state.interpolate_variables(&param.value);
+        }
+        for header in &mut req.headers {
+            header.key = state.interpolate_variables(&header.key);
+            header.value = state.interpolate_variables(&header.value);
+        }
+        req.body.content = state.interpolate_variables(&req.body.content);
+        for field in &mut req.body.urlencoded {
+            field.key = state.interpolate_variables(&field.key);
+            field.value = state.interpolate_variables(&field.value);
+        }
+        for part in &mut req.body.form_data {
+            part.name = state.interpolate_variables(&part.name);
+            part.value = state.interpolate_variables(&part.value);
+            part.content_type = state.interpolate_variables(&part.content_type);
+        }
+        let auth = &mut req.auth;
+        auth.bearer_token = state.interpolate_variables(&auth.bearer_token);
+        auth.bearer_prefix = state.interpolate_variables(&auth.bearer_prefix);
+        auth.basic_username = state.interpolate_variables(&auth.basic_username);
+        auth.basic_password = state.interpolate_variables(&auth.basic_password);
+        auth.api_key_name = state.interpolate_variables(&auth.api_key_name);
+        auth.api_key_value = state.interpolate_variables(&auth.api_key_value);
+        auth.aws_access_key_id = state.interpolate_variables(&auth.aws_access_key_id);
+        auth.aws_secret_access_key = state.interpolate_variables(&auth.aws_secret_access_key);
+        auth.aws_service = state.interpolate_variables(&auth.aws_service);
+        auth.aws_region = state.interpolate_variables(&auth.aws_region);
+        auth.aws_session_token = state.interpolate_variables(&auth.aws_session_token);
+        auth.jwt_secret = state.interpolate_variables(&auth.jwt_secret);
+        auth.jwt_payload = state.interpolate_variables(&auth.jwt_payload);
+        auth.oauth_client_id = state.interpolate_variables(&auth.oauth_client_id);
+        auth.oauth_client_secret = state.interpolate_variables(&auth.oauth_client_secret);
+        auth.oauth_authorization_url = state.interpolate_variables(&auth.oauth_authorization_url);
+        auth.oauth_access_token_url = state.interpolate_variables(&auth.oauth_access_token_url);
+        auth.oauth_redirect_uri = state.interpolate_variables(&auth.oauth_redirect_uri);
+        auth.oauth_state = state.interpolate_variables(&auth.oauth_state);
+        auth.oauth_audience = state.interpolate_variables(&auth.oauth_audience);
+        auth.oauth_username = state.interpolate_variables(&auth.oauth_username);
+        auth.oauth_password = state.interpolate_variables(&auth.oauth_password);
+        auth.oauth_scope = state.interpolate_variables(&auth.oauth_scope);
+        auth.oauth_header_name = state.interpolate_variables(&auth.oauth_header_name);
+        auth.oauth_header_prefix = state.interpolate_variables(&auth.oauth_header_prefix);
+        req
     }
 
     fn new_input(
@@ -568,15 +619,17 @@ impl RequestPanel {
         req.body.form_data = Self::collect_multipart(&self.multipart_rows, &req.body, cx);
         self.sync_auth_inputs_to_config(&mut req.auth, cx);
 
-        let resolved_url = self.app_state.read(cx).interpolate_variables(&req.url);
+        let send_req = {
+            let state = self.app_state.read(cx);
+            Self::request_with_resolved_variables(&state, req.clone())
+        };
+        let resolved_url = send_req.url.clone();
         // Fallback snapshot for a request that dies before `execute` assembles
         // the wire form (bad URL, unreadable body file). The real one comes back
         // over `prepared_rx` and supersedes this.
         let fallback_snapshot =
-            silvapi_core::models::RequestSnapshot::from_request(&req, resolved_url.clone());
-        let started_at = chrono::Local::now()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+            silvapi_core::models::RequestSnapshot::from_request(&send_req, resolved_url.clone());
+        let started_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let run_started = Instant::now();
         let response_request_id = self
             .app_state
@@ -622,8 +675,9 @@ impl RequestPanel {
         let (prepared_tx, prepared_rx) =
             futures::channel::oneshot::channel::<silvapi_core::models::RequestSnapshot>();
         let (chunk_tx, mut chunk_rx) = futures::channel::mpsc::unbounded::<String>();
-        let (done_tx, done_rx) =
-            futures::channel::oneshot::channel::<Result<silvapi_core::models::HttpResponse, String>>();
+        let (done_tx, done_rx) = futures::channel::oneshot::channel::<
+            Result<silvapi_core::models::HttpResponse, String>,
+        >();
 
         let join = crate::runtime::spawn(async move {
             let client = crate::http::HttpClient::new();
@@ -633,7 +687,7 @@ impl RequestPanel {
 
             let result = client
                 .execute(
-                    &req,
+                    &send_req,
                     &resolved_url,
                     |snapshot| {
                         if let Some(tx) = prepared_tx.take() {
@@ -759,8 +813,9 @@ impl RequestPanel {
                                 .entry(done_request_id.clone())
                                 .or_default();
                             history.push(resp.clone());
-                            let overflow =
-                                history.len().saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
+                            let overflow = history
+                                .len()
+                                .saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
                             if overflow > 0 {
                                 history.drain(0..overflow);
                             }
@@ -793,7 +848,6 @@ impl RequestPanel {
         .detach();
     }
 }
-
 
 impl Render for RequestPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1053,7 +1107,10 @@ fn kv_input_row(
         )
 }
 
-fn collection_contains_request(collection: &silvapi_core::models::Collection, request_id: &str) -> bool {
+fn collection_contains_request(
+    collection: &silvapi_core::models::Collection,
+    request_id: &str,
+) -> bool {
     items_contain_request(&collection.items, request_id)
 }
 

@@ -34,102 +34,101 @@ impl ResponsePanel {
         let selected_idx = self.selected_timeline_event;
         let events_len = timeline.len();
 
-        let list = uniform_list(
-            "timeline-scroll",
-            events_len,
-            cx.processor(move |_this: &mut Self, range, _window, cx| {
-                let mut children = Vec::new();
-                for idx in range {
-                    if let Some(ev) = timeline.get(idx) {
-                        let selected = selected_idx == Some(idx);
+        let list =
+            uniform_list(
+                "timeline-scroll",
+                events_len,
+                cx.processor(move |_this: &mut Self, range, _window, cx| {
+                    let mut children = Vec::new();
+                    for idx in range {
+                        if let Some(ev) = timeline.get(idx) {
+                            let selected = selected_idx == Some(idx);
 
-                        let (icon, color) = match ev.icon {
-                            silvapi_core::models::TimelineIcon::Setting => {
-                                (IconName::Settings, cx.theme().muted_foreground)
-                            }
-                            silvapi_core::models::TimelineIcon::Request => {
-                                (IconName::ArrowUp, cx.theme().primary)
-                            }
-                            silvapi_core::models::TimelineIcon::Response => {
-                                (IconName::ArrowDown, cx.theme().primary)
-                            }
-                            silvapi_core::models::TimelineIcon::Info => {
-                                (IconName::Info, cx.theme().muted_foreground)
-                            }
-                        };
+                            let (icon, color) = match ev.icon {
+                                silvapi_core::models::TimelineIcon::Setting => {
+                                    (IconName::Settings, cx.theme().muted_foreground)
+                                }
+                                silvapi_core::models::TimelineIcon::Request => {
+                                    (IconName::ArrowUp, cx.theme().primary)
+                                }
+                                silvapi_core::models::TimelineIcon::Response => {
+                                    (IconName::ArrowDown, cx.theme().primary)
+                                }
+                                silvapi_core::models::TimelineIcon::Info => {
+                                    (IconName::Info, cx.theme().muted_foreground)
+                                }
+                            };
 
-                        let bg_color = if selected {
-                            cx.theme().primary.opacity(0.1)
-                        } else {
-                            gpui::transparent_black()
-                        };
-                        let border = if selected {
-                            gpui::transparent_black()
-                        } else {
-                            cx.theme().border.opacity(0.5)
-                        };
+                            let bg_color = if selected {
+                                cx.theme().primary.opacity(0.1)
+                            } else {
+                                gpui::transparent_black()
+                            };
+                            let border = if selected {
+                                gpui::transparent_black()
+                            } else {
+                                cx.theme().border.opacity(0.5)
+                            };
 
-                        children.push(
-                            h_flex()
-                                .w_full()
-                                .items_center()
-                                .justify_between()
-                                .gap_3()
-                                .py_1p5()
-                                .px_2()
-                                .rounded_md()
-                                .bg(bg_color)
-                                .border_b_1()
-                                .border_color(border)
-                                .cursor_pointer()
-                                .id(idx)
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        if this.selected_timeline_event == Some(idx) {
-                                            this.selected_timeline_event = None;
-                                        } else {
-                                            this.selected_timeline_event = Some(idx);
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_3()
-                                        .items_center()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .flex()
-                                                .items_center()
-                                                .child(Icon::new(icon).small().text_color(color)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .font_family("monospace")
-                                                .text_color(cx.theme().foreground)
-                                                .child(single_line(&ev.name)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_family("monospace")
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(ev.timestamp.clone()),
-                                )
-                                .into_any_element(),
-                        );
+                            children.push(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_3()
+                                    .py_1p5()
+                                    .px_2()
+                                    .rounded_md()
+                                    .bg(bg_color)
+                                    .border_b_1()
+                                    .border_color(border)
+                                    .cursor_pointer()
+                                    .id(idx)
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if this.selected_timeline_event == Some(idx) {
+                                                this.selected_timeline_event = None;
+                                            } else {
+                                                this.selected_timeline_event = Some(idx);
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_3()
+                                            .items_center()
+                                            .min_w_0()
+                                            .child(
+                                                div().flex_none().flex().items_center().child(
+                                                    Icon::new(icon).small().text_color(color),
+                                                ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_family("monospace")
+                                                    .text_color(cx.theme().foreground)
+                                                    .child(single_line(&ev.name)),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_family("monospace")
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(ev.timestamp.clone()),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                     }
-                }
-                children
-            }),
-        )
-        .track_scroll(&self.timeline_scroll)
-        .size_full();
+                    children
+                }),
+            )
+            .track_scroll(&self.timeline_scroll)
+            .size_full();
 
         let mut container = v_flex()
             .size_full()
@@ -247,7 +246,11 @@ impl ResponsePanel {
 
         container
     }
-    pub(super) fn render_sse_tab(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_sse_tab(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let text = self.response_text.clone();
         let mut events = Vec::new();
         for block in text.split("\n\n") {
@@ -532,7 +535,12 @@ impl ResponsePanel {
                         .min_w_0()
                         .p_3()
                         .id("sse-detail-scroll")
-                        .child(Input::new(&self.sse_detail_editor).min_w_0().h_full().w_full()),
+                        .child(
+                            Input::new(&self.sse_detail_editor)
+                                .min_w_0()
+                                .h_full()
+                                .w_full(),
+                        ),
                 );
 
             if allow_column_detail {
@@ -611,5 +619,4 @@ impl ResponsePanel {
         let logical_width = window.bounds().size.width / window.scale_factor();
         logical_width >= px(720.)
     }
-
 }

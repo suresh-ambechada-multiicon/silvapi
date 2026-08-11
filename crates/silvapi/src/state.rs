@@ -2,7 +2,9 @@ use std::{collections::HashMap, time::Instant};
 
 use gpui::{App, EventEmitter};
 
-use silvapi_core::models::{ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace};
+use silvapi_core::models::{
+    ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct RequestActivity {

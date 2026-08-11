@@ -11,17 +11,19 @@ use gpui_component::{
     v_flex,
 };
 
+use super::{AppView, ShortcutInput, ShortcutSpec};
 use crate::state::{AppEvent, AppState};
 use crate::ui::actions::{
-    ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
-    FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, RenameSelected, SendRequest,
-    ThemePicker, ToggleMaximize,
+    ApiPicker, CloseSettings, CloseTab, FocusActiveRequest, FocusCollectionPanel,
+    FocusRequestPanel, FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi,
+    RenameSelected, SendRequest, SwitchLastTab, SwitchTab1, SwitchTab2, SwitchTab3, SwitchTab4,
+    SwitchTab5, SwitchTab6, SwitchTab7, SwitchTab8, SwitchTab9, TabPicker, ThemePicker,
+    ToggleMaximize,
 };
 use crate::ui::collection_panel::CollectionPanel;
 use crate::ui::request_panel::RequestPanel;
 use crate::ui::response_panel::ResponsePanel;
 use crate::ui::top_bar::TopBar;
-use super::{AppView, ShortcutInput, ShortcutSpec};
 
 impl AppView {
     pub(super) fn shortcut_specs() -> Vec<ShortcutSpec> {
@@ -37,14 +39,74 @@ impl AppView {
                 default_key: "ctrl-p",
             },
             ShortcutSpec {
+                id: "tab_picker",
+                label: "Search Open Tabs",
+                default_key: "ctrl-shift-a",
+            },
+            ShortcutSpec {
                 id: "next_api",
-                label: "Next API",
+                label: "Next Tab",
                 default_key: "ctrl-tab",
             },
             ShortcutSpec {
                 id: "prev_api",
-                label: "Previous API",
+                label: "Previous Tab",
                 default_key: "shift-ctrl-tab",
+            },
+            ShortcutSpec {
+                id: "close_tab",
+                label: "Close Tab",
+                default_key: "ctrl-w",
+            },
+            ShortcutSpec {
+                id: "switch_tab_1",
+                label: "Switch to Tab 1",
+                default_key: "ctrl-1",
+            },
+            ShortcutSpec {
+                id: "switch_tab_2",
+                label: "Switch to Tab 2",
+                default_key: "ctrl-2",
+            },
+            ShortcutSpec {
+                id: "switch_tab_3",
+                label: "Switch to Tab 3",
+                default_key: "ctrl-3",
+            },
+            ShortcutSpec {
+                id: "switch_tab_4",
+                label: "Switch to Tab 4",
+                default_key: "ctrl-4",
+            },
+            ShortcutSpec {
+                id: "switch_tab_5",
+                label: "Switch to Tab 5",
+                default_key: "ctrl-5",
+            },
+            ShortcutSpec {
+                id: "switch_tab_6",
+                label: "Switch to Tab 6",
+                default_key: "ctrl-6",
+            },
+            ShortcutSpec {
+                id: "switch_tab_7",
+                label: "Switch to Tab 7",
+                default_key: "ctrl-7",
+            },
+            ShortcutSpec {
+                id: "switch_tab_8",
+                label: "Switch to Tab 8",
+                default_key: "ctrl-8",
+            },
+            ShortcutSpec {
+                id: "switch_tab_9",
+                label: "Switch to Tab 9",
+                default_key: "ctrl-9",
+            },
+            ShortcutSpec {
+                id: "switch_last_tab",
+                label: "Switch to Last Tab",
+                default_key: "ctrl-0",
             },
             ShortcutSpec {
                 id: "send_request",
@@ -110,8 +172,20 @@ impl AppView {
         match id {
             "theme_picker" => cx.bind_keys([KeyBinding::new(key, ThemePicker, None)]),
             "api_picker" => cx.bind_keys([KeyBinding::new(key, ApiPicker, None)]),
+            "tab_picker" => cx.bind_keys([KeyBinding::new(key, TabPicker, None)]),
             "next_api" => cx.bind_keys([KeyBinding::new(key, NextApi, None)]),
             "prev_api" => cx.bind_keys([KeyBinding::new(key, PrevApi, None)]),
+            "close_tab" => cx.bind_keys([KeyBinding::new(key, CloseTab, None)]),
+            "switch_tab_1" => cx.bind_keys([KeyBinding::new(key, SwitchTab1, None)]),
+            "switch_tab_2" => cx.bind_keys([KeyBinding::new(key, SwitchTab2, None)]),
+            "switch_tab_3" => cx.bind_keys([KeyBinding::new(key, SwitchTab3, None)]),
+            "switch_tab_4" => cx.bind_keys([KeyBinding::new(key, SwitchTab4, None)]),
+            "switch_tab_5" => cx.bind_keys([KeyBinding::new(key, SwitchTab5, None)]),
+            "switch_tab_6" => cx.bind_keys([KeyBinding::new(key, SwitchTab6, None)]),
+            "switch_tab_7" => cx.bind_keys([KeyBinding::new(key, SwitchTab7, None)]),
+            "switch_tab_8" => cx.bind_keys([KeyBinding::new(key, SwitchTab8, None)]),
+            "switch_tab_9" => cx.bind_keys([KeyBinding::new(key, SwitchTab9, None)]),
+            "switch_last_tab" => cx.bind_keys([KeyBinding::new(key, SwitchLastTab, None)]),
             "send_request" => cx.bind_keys([KeyBinding::new(key, SendRequest, None)]),
             "rename_selected" => cx.bind_keys([KeyBinding::new(key, RenameSelected, None)]),
             "toggle_maximize" => cx.bind_keys([KeyBinding::new(key, ToggleMaximize, None)]),
@@ -138,7 +212,11 @@ impl AppView {
         }
     }
 
-    pub(super) fn save_shortcut(spec: &ShortcutSpec, input: &Entity<InputState>, cx: &mut Context<Self>) {
+    pub(super) fn save_shortcut(
+        spec: &ShortcutSpec,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) {
         let value = input.read(cx).value().trim().to_lowercase();
         if value.is_empty() || Keystroke::parse(&value).is_err() {
             return;
@@ -166,5 +244,4 @@ impl AppView {
             None,
         )]);
     }
-
 }

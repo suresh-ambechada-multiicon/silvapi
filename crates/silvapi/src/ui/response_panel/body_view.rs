@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _,
+    ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -27,7 +27,12 @@ impl ResponsePanel {
     /// paint, so wrapped text otherwise appears stale until an interaction (e.g.
     /// moving the cursor) forces a relayout. The response editor keeps its
     /// measured width across updates, so forcing wrap here is safe.
-    pub(super) fn set_response_text(&self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_response_text(
+        &self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let soft_wrap = self.soft_wrap && !self.response_editor_plain;
         self.response_editor.update(cx, |state, cx| {
             state.set_value(text, window, cx);
@@ -335,6 +340,19 @@ impl ResponsePanel {
                                 })
                         })
                         .child(
+                            Button::new("response-download")
+                                .icon(IconName::File)
+                                .tooltip("Download response body")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some(response) = this.app_state.read(cx).response.clone()
+                                    {
+                                        this.download_response_body(response, window, cx);
+                                    }
+                                })),
+                        )
+                        .child(
                             Button::new("response-wrap-toggle")
                                 .icon(if self.soft_wrap {
                                     IconName::ArrowLeft
@@ -376,4 +394,129 @@ impl ResponsePanel {
             )
     }
 
+    pub(super) fn download_response_body(
+        &self,
+        response: silvapi_core::models::HttpResponse,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filename = response_download_filename(&response);
+        let bytes = response.raw_body_bytes();
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select download folder".into()),
+        });
+
+        cx.spawn_in(window, async move |_, window| {
+            let dir = rx.await.ok()?.ok()??.iter().next()?.clone();
+            let path = dir.join(filename);
+            let result = std::fs::write(&path, bytes);
+            window
+                .update(|window, cx| match result {
+                    Ok(_) => {
+                        window.push_notification(format!("Saved response: {}", path.display()), cx)
+                    }
+                    Err(err) => {
+                        window.push_notification(format!("Failed to save response: {}", err), cx)
+                    }
+                })
+                .ok();
+            Some(())
+        })
+        .detach();
+    }
+}
+
+fn response_download_filename(response: &silvapi_core::models::HttpResponse) -> String {
+    if let Some(filename) = response
+        .headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("content-disposition"))
+        .and_then(|(_, value)| content_disposition_filename(value))
+    {
+        return sanitize_filename(&filename);
+    }
+
+    if let Some(name) = response
+        .request
+        .as_ref()
+        .and_then(|request| filename_from_url(&request.resolved_url))
+        .filter(|name| !name.is_empty())
+    {
+        return sanitize_filename(&name);
+    }
+
+    let extension = response_content_extension(response);
+    format!("response.{extension}")
+}
+
+fn content_disposition_filename(value: &str) -> Option<String> {
+    value.split(';').find_map(|part| {
+        let part = part.trim();
+        let raw = part
+            .strip_prefix("filename*=")
+            .or_else(|| part.strip_prefix("filename="))?;
+        let raw = raw.trim_matches('"');
+        Some(raw.rsplit("''").next().unwrap_or(raw).to_string())
+    })
+}
+
+fn filename_from_url(url: &str) -> Option<String> {
+    let without_query = url.split(['?', '#']).next().unwrap_or(url);
+    without_query
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
+fn response_content_extension(response: &silvapi_core::models::HttpResponse) -> &'static str {
+    let content_type = response
+        .headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    if content_type.contains("application/json") {
+        "json"
+    } else if content_type.contains("application/pdf") {
+        "pdf"
+    } else if content_type.contains("image/png") {
+        "png"
+    } else if content_type.contains("image/jpeg") || content_type.contains("image/jpg") {
+        "jpg"
+    } else if content_type.contains("image/gif") {
+        "gif"
+    } else if content_type.contains("image/webp") {
+        "webp"
+    } else if content_type.contains("video/mp4") {
+        "mp4"
+    } else if content_type.contains("video/webm") {
+        "webm"
+    } else if content_type.contains("audio/mpeg") {
+        "mp3"
+    } else if content_type.starts_with("text/") {
+        "txt"
+    } else {
+        "bin"
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            _ => ch,
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches(['.', ' ']).trim();
+    if cleaned.is_empty() {
+        "response.bin".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }

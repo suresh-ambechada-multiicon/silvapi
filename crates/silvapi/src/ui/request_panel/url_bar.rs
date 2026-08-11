@@ -14,8 +14,10 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::{
+    AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,
+};
 
 use super::*;
 
@@ -50,9 +52,13 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn refresh_url_variable_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let url = self.url_input.read(cx).value().to_string();
-        let names = Self::extract_variable_names(&url);
+    pub(super) fn refresh_url_variable_rows(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let names = self.request_variable_names(cx);
+        self.ensure_global_variables(&names, cx);
         let current_names = self
             .url_variable_rows
             .iter()
@@ -98,6 +104,40 @@ impl RequestPanel {
             rest = &after_start[end + 2..];
         }
 
+        names
+    }
+
+    pub(super) fn request_variable_names(&self, cx: &App) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut add_from = |text: &str| {
+            for name in Self::extract_variable_names(text) {
+                if !names.iter().any(|existing| existing == &name) {
+                    names.push(name);
+                }
+            }
+        };
+
+        add_from(self.url_input.read(cx).value().as_ref());
+        add_from(self.body_editor.read(cx).value().as_ref());
+        for (key, value, _) in &self.param_rows {
+            add_from(key.read(cx).value().as_ref());
+            add_from(value.read(cx).value().as_ref());
+        }
+        for (key, value, _) in &self.header_rows {
+            add_from(key.read(cx).value().as_ref());
+            add_from(value.read(cx).value().as_ref());
+        }
+        for (key, value, _) in &self.urlencoded_rows {
+            add_from(key.read(cx).value().as_ref());
+            add_from(value.read(cx).value().as_ref());
+        }
+        for row in &self.multipart_rows {
+            add_from(row.name.read(cx).value().as_ref());
+            add_from(row.value.read(cx).value().as_ref());
+        }
+        for input in self.auth_inputs.all() {
+            add_from(input.read(cx).value().as_ref());
+        }
         names
     }
 
@@ -252,7 +292,37 @@ impl RequestPanel {
         });
     }
 
-    pub(super) fn render_url_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn ensure_global_variables(&self, names: &[String], cx: &mut Context<Self>) {
+        if names.is_empty() {
+            return;
+        }
+        self.app_state.update(cx, |state, cx| {
+            let mut changed = false;
+            for name in names {
+                if !state
+                    .workspace
+                    .variables
+                    .iter()
+                    .any(|var| var.name == *name)
+                {
+                    state
+                        .workspace
+                        .variables
+                        .push(silvapi_core::models::Variable::new(name.clone(), ""));
+                    changed = true;
+                }
+            }
+            if changed {
+                cx.emit(AppEvent::SaveNeeded);
+            }
+        });
+    }
+
+    pub(super) fn render_url_bar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let method = self
             .app_state
             .read(cx)
@@ -360,7 +430,11 @@ impl RequestPanel {
             })
     }
 
-    pub(super) fn render_url_field(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_url_field(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let url = self.url_input.read(cx).value().to_string();
         let has_decorated_segments = !Self::extract_variable_names(&url).is_empty()
             || !Self::url_param_keys(&url).is_empty();
@@ -498,7 +572,10 @@ impl RequestPanel {
             .into_any_element()
     }
 
-    pub(super) fn render_url_chip_tooltip(tooltip: String, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_url_chip_tooltip(
+        tooltip: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         deferred(
             anchored()
                 .anchor(Anchor::TopLeft)
@@ -629,7 +706,11 @@ impl RequestPanel {
             .into_any_element()
     }
 
-    pub(super) fn sync_path_param_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn sync_path_param_rows(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let url = self.url_input.read(cx).value().to_string();
         let extracted = Self::url_param_keys(&url);
         let previous_path_params = self.path_param_keys.clone();
@@ -723,5 +804,4 @@ impl RequestPanel {
             }
         }
     }
-
 }

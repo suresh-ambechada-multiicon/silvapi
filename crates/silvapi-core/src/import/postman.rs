@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use crate::models::{
-    ApiRequest, BodyType, Collection, CollectionItem, Folder, HttpMethod, KeyValue, RequestBody,
+    ApiRequest, AuthConfig, AuthType, BodyType, Collection, CollectionItem, Folder, FormDataPart,
+    FormDataPartKind, HttpMethod, KeyValue, RequestBody,
 };
 
 pub fn import_postman(json: &str) -> Result<Collection, String> {
@@ -120,6 +121,8 @@ fn parse_postman_request(item: &Value) -> Option<ApiRequest> {
         }
     }
 
+    let auth = parse_auth(&req_val["auth"]);
+
     // Body
     let body = parse_body(&req_val["body"]);
 
@@ -130,8 +133,44 @@ fn parse_postman_request(item: &Value) -> Option<ApiRequest> {
         params,
         headers,
         body,
+        auth,
         ..Default::default()
     })
+}
+
+fn parse_auth(auth_val: &Value) -> AuthConfig {
+    let mut auth = AuthConfig::default();
+    match auth_val["type"].as_str().unwrap_or("") {
+        "bearer" => {
+            auth.auth_type = AuthType::Bearer;
+            auth.bearer_token = auth_attr(auth_val, "bearer", "token");
+        }
+        "basic" => {
+            auth.auth_type = AuthType::Basic;
+            auth.basic_username = auth_attr(auth_val, "basic", "username");
+            auth.basic_password = auth_attr(auth_val, "basic", "password");
+        }
+        "apikey" | "apiKey" => {
+            auth.auth_type = AuthType::ApiKey;
+            auth.api_key_name = auth_attr(auth_val, "apikey", "key");
+            auth.api_key_value = auth_attr(auth_val, "apikey", "value");
+            auth.api_key_in_header = auth_attr(auth_val, "apikey", "in") != "query";
+        }
+        _ => {}
+    }
+    auth
+}
+
+fn auth_attr(auth_val: &Value, section: &str, key: &str) -> String {
+    auth_val[section]
+        .as_array()
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                (item["key"].as_str() == Some(key))
+                    .then(|| item["value"].as_str().unwrap_or("").to_string())
+            })
+        })
+        .unwrap_or_default()
 }
 
 fn parse_body(body_val: &Value) -> RequestBody {
@@ -175,6 +214,83 @@ fn parse_body(body_val: &Value) -> RequestBody {
                 form_data: Vec::new(),
             }
         }
+        "formdata" => {
+            let parts: Vec<FormDataPart> = body_val["formdata"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|p| {
+                    let kind = if p["type"].as_str() == Some("file") {
+                        FormDataPartKind::File
+                    } else {
+                        FormDataPartKind::Text
+                    };
+                    FormDataPart {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        name: p["key"].as_str().unwrap_or("").to_string(),
+                        value: p["src"]
+                            .as_str()
+                            .or_else(|| p["value"].as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        enabled: !p["disabled"].as_bool().unwrap_or(false),
+                        kind,
+                        content_type: p["contentType"].as_str().unwrap_or("").to_string(),
+                    }
+                })
+                .collect();
+            RequestBody {
+                body_type: BodyType::FormData,
+                content: String::new(),
+                urlencoded: Vec::new(),
+                form_data: parts,
+            }
+        }
         _ => RequestBody::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imports_postman_auth_and_form_data() {
+        let json = r#"
+        {
+          "info": {"name": "Upload API"},
+          "item": [{
+            "name": "Upload file",
+            "request": {
+              "method": "POST",
+              "url": "https://example.com/upload",
+              "auth": {
+                "type": "bearer",
+                "bearer": [{"key": "token", "value": "{{apiToken}}"}]
+              },
+              "body": {
+                "mode": "formdata",
+                "formdata": [
+                  {"key": "title", "value": "Report", "type": "text"},
+                  {"key": "media", "src": "/tmp/report.pdf", "type": "file", "contentType": "application/pdf"}
+                ]
+              }
+            }
+          }]
+        }
+        "#;
+
+        let collection = import_postman(json).unwrap();
+        let CollectionItem::Request(req) = &collection.items[0] else {
+            panic!("expected request");
+        };
+
+        assert_eq!(req.auth.auth_type, AuthType::Bearer);
+        assert_eq!(req.auth.bearer_token, "{{apiToken}}");
+        assert_eq!(req.body.body_type, BodyType::FormData);
+        assert_eq!(req.body.form_data.len(), 2);
+        assert_eq!(req.body.form_data[1].kind, FormDataPartKind::File);
+        assert_eq!(req.body.form_data[1].value, "/tmp/report.pdf");
+        assert_eq!(req.body.form_data[1].content_type, "application/pdf");
     }
 }

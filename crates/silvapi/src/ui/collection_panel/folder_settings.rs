@@ -14,9 +14,9 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, CollectionItem, Folder, KeyValue, Variable}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
 use crate::ui::actions::{FocusActiveRequest, RenameSelected, SendRequest};
+use silvapi_core::models::{AuthConfig, AuthType, CollectionItem, Folder, KeyValue, Variable};
 
 use super::*;
 
@@ -81,7 +81,11 @@ impl CollectionPanel {
             .unwrap_or_default()
     }
 
-    pub(super) fn update_folder_auth(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut AuthConfig)) {
+    pub(super) fn update_folder_auth(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut AuthConfig),
+    ) {
         let Some(folder_id) = self.folder_settings_id.clone() else {
             return;
         };
@@ -142,8 +146,7 @@ impl CollectionPanel {
             auth.oauth_authorization_url = "https://github.com/login/oauth/authorize".to_string();
         }
         if auth.oauth_access_token_url.is_empty() {
-            auth.oauth_access_token_url =
-                "https://github.com/login/oauth/access_token".to_string();
+            auth.oauth_access_token_url = "https://github.com/login/oauth/access_token".to_string();
         }
         if auth.oauth_token_target.is_empty() {
             auth.oauth_token_target = "access_token".to_string();
@@ -171,10 +174,15 @@ impl CollectionPanel {
         cx: &mut Context<Self>,
     ) {
         let i = &self.folder_auth_inputs;
-        i.bearer_token
-            .update(cx, |s, cx| s.set_value(auth.bearer_token.clone(), window, cx));
+        i.bearer_token.update(cx, |s, cx| {
+            s.set_value(auth.bearer_token.clone(), window, cx)
+        });
         i.bearer_prefix.update(cx, |s, cx| {
-            s.set_value(folder_default_if_empty(&auth.bearer_prefix, "Bearer"), window, cx)
+            s.set_value(
+                folder_default_if_empty(&auth.bearer_prefix, "Bearer"),
+                window,
+                cx,
+            )
         });
         i.basic_username.update(cx, |s, cx| {
             s.set_value(auth.basic_username.clone(), window, cx)
@@ -182,10 +190,12 @@ impl CollectionPanel {
         i.basic_password.update(cx, |s, cx| {
             s.set_value(auth.basic_password.clone(), window, cx)
         });
-        i.api_key_name
-            .update(cx, |s, cx| s.set_value(auth.api_key_name.clone(), window, cx));
-        i.api_key_value
-            .update(cx, |s, cx| s.set_value(auth.api_key_value.clone(), window, cx));
+        i.api_key_name.update(cx, |s, cx| {
+            s.set_value(auth.api_key_name.clone(), window, cx)
+        });
+        i.api_key_value.update(cx, |s, cx| {
+            s.set_value(auth.api_key_value.clone(), window, cx)
+        });
         i.aws_access_key_id.update(cx, |s, cx| {
             s.set_value(auth.aws_access_key_id.clone(), window, cx)
         });
@@ -193,10 +203,18 @@ impl CollectionPanel {
             s.set_value(auth.aws_secret_access_key.clone(), window, cx)
         });
         i.aws_service.update(cx, |s, cx| {
-            s.set_value(folder_default_if_empty(&auth.aws_service, "sts"), window, cx)
+            s.set_value(
+                folder_default_if_empty(&auth.aws_service, "sts"),
+                window,
+                cx,
+            )
         });
         i.aws_region.update(cx, |s, cx| {
-            s.set_value(folder_default_if_empty(&auth.aws_region, "us-east-1"), window, cx)
+            s.set_value(
+                folder_default_if_empty(&auth.aws_region, "us-east-1"),
+                window,
+                cx,
+            )
         });
         i.aws_session_token.update(cx, |s, cx| {
             s.set_value(auth.aws_session_token.clone(), window, cx)
@@ -239,8 +257,9 @@ impl CollectionPanel {
         i.oauth_redirect_uri.update(cx, |s, cx| {
             s.set_value(auth.oauth_redirect_uri.clone(), window, cx)
         });
-        i.oauth_state
-            .update(cx, |s, cx| s.set_value(auth.oauth_state.clone(), window, cx));
+        i.oauth_state.update(cx, |s, cx| {
+            s.set_value(auth.oauth_state.clone(), window, cx)
+        });
         i.oauth_audience.update(cx, |s, cx| {
             s.set_value(auth.oauth_audience.clone(), window, cx)
         });
@@ -250,8 +269,9 @@ impl CollectionPanel {
         i.oauth_password.update(cx, |s, cx| {
             s.set_value(auth.oauth_password.clone(), window, cx)
         });
-        i.oauth_scope
-            .update(cx, |s, cx| s.set_value(auth.oauth_scope.clone(), window, cx));
+        i.oauth_scope.update(cx, |s, cx| {
+            s.set_value(auth.oauth_scope.clone(), window, cx)
+        });
         i.oauth_header_name.update(cx, |s, cx| {
             s.set_value(
                 folder_default_if_empty(&auth.oauth_header_name, "Authorization"),
@@ -410,11 +430,7 @@ impl CollectionPanel {
         self.folder_settings_id.is_some()
     }
 
-    pub fn folder_settings_modal(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub fn folder_settings_modal(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.render_folder_settings_modal(window, cx)
     }
 
@@ -574,28 +590,28 @@ impl CollectionPanel {
             .overflow_hidden()
             .child(
                 DropdownButton::new("folder-auth-dropdown")
-            .button(
-                Button::new("folder-auth-btn")
-                    .label(label)
-                    .ghost()
-                    .small()
-                    .when(active, |b| b.primary())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.folder_settings_tab = FolderSettingsTab::Auth;
-                        cx.notify();
-                    })),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                menu.item(item("API Key", true, AuthType::ApiKey))
-                    .item(item("AWS Signature", true, AuthType::AwsV4))
-                    .item(item("Basic Auth", true, AuthType::Basic))
-                    .item(item("Bearer Token", true, AuthType::Bearer))
-                    .item(item("JWT Bearer", true, AuthType::Jwt))
-                    .item(item("OAuth 2.0", true, AuthType::OAuth2))
-                    .separator()
-                    .item(item("Inherit from Parent", false, AuthType::None))
-                    .item(item("No Auth", true, AuthType::None))
-            }),
+                    .button(
+                        Button::new("folder-auth-btn")
+                            .label(label)
+                            .ghost()
+                            .small()
+                            .when(active, |b| b.primary())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.folder_settings_tab = FolderSettingsTab::Auth;
+                                cx.notify();
+                            })),
+                    )
+                    .dropdown_menu(move |menu, _, _| {
+                        menu.item(item("API Key", true, AuthType::ApiKey))
+                            .item(item("AWS Signature", true, AuthType::AwsV4))
+                            .item(item("Basic Auth", true, AuthType::Basic))
+                            .item(item("Bearer Token", true, AuthType::Bearer))
+                            .item(item("JWT Bearer", true, AuthType::Jwt))
+                            .item(item("OAuth 2.0", true, AuthType::OAuth2))
+                            .separator()
+                            .item(item("Inherit from Parent", false, AuthType::None))
+                            .item(item("No Auth", true, AuthType::None))
+                    }),
             )
             .into_any_element()
     }
@@ -1378,5 +1394,4 @@ impl CollectionPanel {
                 cx,
             ))
     }
-
 }

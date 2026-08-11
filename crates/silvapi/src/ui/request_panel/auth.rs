@@ -14,8 +14,10 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::{
+    AuthConfig, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,
+};
 
 use super::*;
 
@@ -50,7 +52,12 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn load_auth_inputs(&self, auth: &AuthConfig, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn load_auth_inputs(
+        &self,
+        auth: &AuthConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.auth_inputs.bearer_token.update(cx, |s, cx| {
             s.set_value(auth.bearer_token.clone(), window, cx)
         });
@@ -315,7 +322,10 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn auth_type_dropdown(app_state: Entity<AppState>, current: &AuthType) -> impl IntoElement {
+    pub(super) fn auth_type_dropdown(
+        app_state: Entity<AppState>,
+        current: &AuthType,
+    ) -> impl IntoElement {
         let current = current.clone();
         let current_label = Self::auth_type_label(&current);
         let current_for_items = current.clone();
@@ -357,7 +367,11 @@ impl RequestPanel {
             })
     }
 
-    pub(super) fn render_api_key_auth(&self, auth: &AuthConfig, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_api_key_auth(
+        &self,
+        auth: &AuthConfig,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let api_key_in_header = auth.api_key_in_header;
         let behavior_label = if auth.api_key_in_header {
             "Insert Header"
@@ -402,7 +416,7 @@ impl RequestPanel {
                     }),
                 cx,
             ))
-            .child(Self::auth_input_field(
+            .child(self.auth_input_field(
                 if auth.api_key_in_header {
                     "Header Name*"
                 } else {
@@ -411,74 +425,42 @@ impl RequestPanel {
                 &self.auth_inputs.api_key_name,
                 cx,
             ))
-            .child(Self::auth_input_field(
-                "API Key",
-                &self.auth_inputs.api_key_value,
-                cx,
-            ))
+            .child(self.auth_input_field("API Key", &self.auth_inputs.api_key_value, cx))
     }
 
     pub(super) fn render_aws_auth(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(Self::auth_input_field(
-                "Access Key ID*",
-                &self.auth_inputs.aws_access_key_id,
-                cx,
-            ))
-            .child(Self::auth_input_field(
+            .child(self.auth_input_field("Access Key ID*", &self.auth_inputs.aws_access_key_id, cx))
+            .child(self.auth_input_field(
                 "Secret Access Key*",
                 &self.auth_inputs.aws_secret_access_key,
                 cx,
             ))
-            .child(Self::auth_input_field(
-                "Service Name*",
-                &self.auth_inputs.aws_service,
-                cx,
-            ))
-            .child(Self::auth_input_field(
-                "Region",
-                &self.auth_inputs.aws_region,
-                cx,
-            ))
-            .child(Self::auth_input_field(
-                "Session Token",
-                &self.auth_inputs.aws_session_token,
-                cx,
-            ))
+            .child(self.auth_input_field("Service Name*", &self.auth_inputs.aws_service, cx))
+            .child(self.auth_input_field("Region", &self.auth_inputs.aws_region, cx))
+            .child(self.auth_input_field("Session Token", &self.auth_inputs.aws_session_token, cx))
     }
 
     pub(super) fn render_basic_auth(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(Self::auth_input_field(
-                "Username",
-                &self.auth_inputs.basic_username,
-                cx,
-            ))
-            .child(Self::auth_input_field(
-                "Password",
-                &self.auth_inputs.basic_password,
-                cx,
-            ))
+            .child(self.auth_input_field("Username", &self.auth_inputs.basic_username, cx))
+            .child(self.auth_input_field("Password", &self.auth_inputs.basic_password, cx))
     }
 
     pub(super) fn render_bearer_auth(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(Self::auth_input_field(
-                "Token",
-                &self.auth_inputs.bearer_token,
-                cx,
-            ))
-            .child(Self::auth_input_field(
-                "Prefix",
-                &self.auth_inputs.bearer_prefix,
-                cx,
-            ))
+            .child(self.auth_input_field("Token", &self.auth_inputs.bearer_token, cx))
+            .child(self.auth_input_field("Prefix", &self.auth_inputs.bearer_prefix, cx))
     }
 
-    pub(super) fn render_jwt_auth(&self, auth: &AuthConfig, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_jwt_auth(
+        &self,
+        auth: &AuthConfig,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         v_flex()
             .gap_3()
             .child(
@@ -514,11 +496,7 @@ impl RequestPanel {
                         }
                     }),
             )
-            .child(Self::auth_input_field(
-                "Secret or Private Key",
-                &self.auth_inputs.jwt_secret,
-                cx,
-            ))
+            .child(self.auth_input_field("Secret or Private Key", &self.auth_inputs.jwt_secret, cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -541,7 +519,11 @@ impl RequestPanel {
             ))
     }
 
-    pub(super) fn render_oauth_auth(&self, auth: &AuthConfig, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_oauth_auth(
+        &self,
+        auth: &AuthConfig,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let grant = Self::oauth_grant_label(&auth.oauth_grant_type);
         let is_authorization_code = grant == "Authorization Code";
         let is_implicit = grant == "Implicit";
@@ -555,138 +537,90 @@ impl RequestPanel {
                 &auth.oauth_grant_type,
             ))
             .when(is_authorization_code, |el| {
-                el.child(Self::auth_input_field(
-                    "Client ID",
-                    &self.auth_inputs.oauth_client_id,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Client Secret",
-                    &self.auth_inputs.oauth_client_secret,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Authorization URL",
-                    &self.auth_inputs.oauth_authorization_url,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Access Token URL",
-                    &self.auth_inputs.oauth_access_token_url,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Redirect URI",
-                    &self.auth_inputs.oauth_redirect_uri,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "State",
-                    &self.auth_inputs.oauth_state,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Audience",
-                    &self.auth_inputs.oauth_audience,
-                    cx,
-                ))
-                .child(Self::auth_select_field(
-                    "Token for authorization",
-                    Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
-                    cx,
-                ))
-                .child(Self::oauth_pkce_checkbox(auth, cx))
+                el.child(self.auth_input_field("Client ID", &self.auth_inputs.oauth_client_id, cx))
+                    .child(self.auth_input_field(
+                        "Client Secret",
+                        &self.auth_inputs.oauth_client_secret,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Authorization URL",
+                        &self.auth_inputs.oauth_authorization_url,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Access Token URL",
+                        &self.auth_inputs.oauth_access_token_url,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Redirect URI",
+                        &self.auth_inputs.oauth_redirect_uri,
+                        cx,
+                    ))
+                    .child(self.auth_input_field("State", &self.auth_inputs.oauth_state, cx))
+                    .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
+                    .child(Self::auth_select_field(
+                        "Token for authorization",
+                        Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
+                        cx,
+                    ))
+                    .child(Self::oauth_pkce_checkbox(auth, cx))
             })
             .when(is_implicit, |el| {
-                el.child(Self::auth_input_field(
-                    "Client ID",
-                    &self.auth_inputs.oauth_client_id,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Authorization URL",
-                    &self.auth_inputs.oauth_authorization_url,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Redirect URI",
-                    &self.auth_inputs.oauth_redirect_uri,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "State",
-                    &self.auth_inputs.oauth_state,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Audience",
-                    &self.auth_inputs.oauth_audience,
-                    cx,
-                ))
-                .child(Self::auth_select_field(
-                    "Token for authorization",
-                    Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
-                    cx,
-                ))
-                .child(Self::auth_select_field(
-                    "Response Type",
-                    Self::oauth_response_type_dropdown(self.app_state.clone(), auth),
-                    cx,
-                ))
+                el.child(self.auth_input_field("Client ID", &self.auth_inputs.oauth_client_id, cx))
+                    .child(self.auth_input_field(
+                        "Authorization URL",
+                        &self.auth_inputs.oauth_authorization_url,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Redirect URI",
+                        &self.auth_inputs.oauth_redirect_uri,
+                        cx,
+                    ))
+                    .child(self.auth_input_field("State", &self.auth_inputs.oauth_state, cx))
+                    .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
+                    .child(Self::auth_select_field(
+                        "Token for authorization",
+                        Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
+                        cx,
+                    ))
+                    .child(Self::auth_select_field(
+                        "Response Type",
+                        Self::oauth_response_type_dropdown(self.app_state.clone(), auth),
+                        cx,
+                    ))
             })
             .when(is_resource_owner, |el| {
-                el.child(Self::auth_input_field(
-                    "Client ID",
-                    &self.auth_inputs.oauth_client_id,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Client Secret",
-                    &self.auth_inputs.oauth_client_secret,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Access Token URL",
-                    &self.auth_inputs.oauth_access_token_url,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Audience",
-                    &self.auth_inputs.oauth_audience,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Username",
-                    &self.auth_inputs.oauth_username,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Password",
-                    &self.auth_inputs.oauth_password,
-                    cx,
-                ))
+                el.child(self.auth_input_field("Client ID", &self.auth_inputs.oauth_client_id, cx))
+                    .child(self.auth_input_field(
+                        "Client Secret",
+                        &self.auth_inputs.oauth_client_secret,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Access Token URL",
+                        &self.auth_inputs.oauth_access_token_url,
+                        cx,
+                    ))
+                    .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
+                    .child(self.auth_input_field("Username", &self.auth_inputs.oauth_username, cx))
+                    .child(self.auth_input_field("Password", &self.auth_inputs.oauth_password, cx))
             })
             .when(is_client_credentials, |el| {
-                el.child(Self::auth_input_field(
-                    "Client ID",
-                    &self.auth_inputs.oauth_client_id,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Client Secret",
-                    &self.auth_inputs.oauth_client_secret,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Access Token URL",
-                    &self.auth_inputs.oauth_access_token_url,
-                    cx,
-                ))
-                .child(Self::auth_input_field(
-                    "Audience",
-                    &self.auth_inputs.oauth_audience,
-                    cx,
-                ))
+                el.child(self.auth_input_field("Client ID", &self.auth_inputs.oauth_client_id, cx))
+                    .child(self.auth_input_field(
+                        "Client Secret",
+                        &self.auth_inputs.oauth_client_secret,
+                        cx,
+                    ))
+                    .child(self.auth_input_field(
+                        "Access Token URL",
+                        &self.auth_inputs.oauth_access_token_url,
+                        cx,
+                    ))
+                    .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
             })
             .child(self.render_oauth_advanced(auth, cx))
     }
@@ -702,7 +636,10 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn oauth_grant_dropdown(app_state: Entity<AppState>, current: &str) -> impl IntoElement {
+    pub(super) fn oauth_grant_dropdown(
+        app_state: Entity<AppState>,
+        current: &str,
+    ) -> impl IntoElement {
         let current = Self::oauth_grant_label(current);
         let app_state_for_items = app_state.clone();
         let item = move |grant: &'static str| {
@@ -824,7 +761,10 @@ impl RequestPanel {
             })
     }
 
-    pub(super) fn oauth_pkce_checkbox(auth: &AuthConfig, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn oauth_pkce_checkbox(
+        auth: &AuthConfig,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         h_flex()
             .gap_2()
             .items_center()
@@ -840,7 +780,11 @@ impl RequestPanel {
             .child(div().text_sm().child("Use PKCE"))
     }
 
-    pub(super) fn render_oauth_advanced(&self, auth: &AuthConfig, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_oauth_advanced(
+        &self,
+        auth: &AuthConfig,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         v_flex()
             .gap_3()
             .p_3()
@@ -848,17 +792,9 @@ impl RequestPanel {
             .border_color(cx.theme().border)
             .rounded_md()
             .child(div().text_sm().child("Advanced"))
-            .child(Self::auth_input_field(
-                "Scope",
-                &self.auth_inputs.oauth_scope,
-                cx,
-            ))
-            .child(Self::auth_input_field(
-                "Header Name*",
-                &self.auth_inputs.oauth_header_name,
-                cx,
-            ))
-            .child(Self::auth_input_field(
+            .child(self.auth_input_field("Scope", &self.auth_inputs.oauth_scope, cx))
+            .child(self.auth_input_field("Header Name*", &self.auth_inputs.oauth_header_name, cx))
+            .child(self.auth_input_field(
                 "Header Prefix",
                 &self.auth_inputs.oauth_header_prefix,
                 cx,
@@ -887,11 +823,115 @@ impl RequestPanel {
     }
 
     pub(super) fn auth_input_field(
+        &self,
         label: &'static str,
         input: &Entity<InputState>,
         cx: &App,
     ) -> impl IntoElement {
-        Self::auth_select_field(label, Input::new(input).w_full(), cx)
+        let variables = self.auth_variable_suggestions(cx);
+        let app_state = self.app_state.clone();
+        let input_for_menu = input.clone();
+        let input_for_add = input.clone();
+        let add_name = Self::auth_variable_name_for_field(label, input.read(cx).value().as_ref());
+
+        Self::auth_select_field(
+            label,
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(Input::new(input).w_full()),
+                )
+                .child(
+                    DropdownButton::new(SharedString::from(format!(
+                        "auth-var-menu-{}",
+                        label.replace(|ch: char| !ch.is_ascii_alphanumeric(), "-")
+                    )))
+                    .button(
+                        Button::new(SharedString::from(format!(
+                            "auth-var-btn-{}",
+                            label.replace(|ch: char| !ch.is_ascii_alphanumeric(), "-")
+                        )))
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Insert or create variable"),
+                    )
+                    .dropdown_menu(move |menu, _, _| {
+                        let menu = variables.iter().take(20).fold(menu, |menu, (name, value)| {
+                            let name_for_label = name.clone();
+                            let value_preview = Self::input_line(value);
+                            let label = if value_preview.is_empty() {
+                                format!("{{{{{name_for_label}}}}}")
+                            } else {
+                                format!(
+                                    "{{{{{name_for_label}}}}} = {}",
+                                    truncate_middle(&value_preview, 44)
+                                )
+                            };
+                            let input = input_for_menu.clone();
+                            let insert_name = name.clone();
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                input.update(cx, |state, cx| {
+                                    let next = insert_variable_reference(
+                                        state.value().as_ref(),
+                                        &insert_name,
+                                    );
+                                    state.set_value(next, window, cx);
+                                });
+                            }))
+                        });
+
+                        let input = input_for_add.clone();
+                        let app_state = app_state.clone();
+                        let add_name_for_label = add_name.clone();
+                        let add_name_for_click = add_name.clone();
+                        menu.separator().item(
+                            PopupMenuItem::new(format!(
+                                "Add variable: {{{{{add_name_for_label}}}}}"
+                            ))
+                            .on_click(move |_, window, cx| {
+                                let add_name = add_name_for_click.clone();
+                                let current_value = input.read(cx).value().to_string();
+                                app_state.update(cx, |state, cx| {
+                                    if let Some(var) = state
+                                        .workspace
+                                        .variables
+                                        .iter_mut()
+                                        .find(|var| var.name == add_name)
+                                    {
+                                        if var.value.is_empty() && !current_value.starts_with("{{")
+                                        {
+                                            var.value = current_value.clone();
+                                        }
+                                        var.enabled = true;
+                                    } else {
+                                        let value = if current_value.starts_with("{{") {
+                                            String::new()
+                                        } else {
+                                            current_value.clone()
+                                        };
+                                        state.workspace.variables.push(
+                                            silvapi_core::models::Variable::new(
+                                                add_name.clone(),
+                                                value,
+                                            ),
+                                        );
+                                    }
+                                    cx.emit(AppEvent::SaveNeeded);
+                                });
+                                input.update(cx, |state, cx| {
+                                    state.set_value(format!("{{{{{add_name}}}}}"), window, cx);
+                                });
+                            }),
+                        )
+                    }),
+                ),
+            cx,
+        )
     }
 
     pub(super) fn auth_multiline_field(
@@ -900,6 +940,71 @@ impl RequestPanel {
         cx: &App,
     ) -> impl IntoElement {
         Self::auth_select_field(label, Input::new(input).h(px(82.)).w_full(), cx)
+    }
+
+    pub(super) fn auth_variable_suggestions(&self, cx: &App) -> Vec<(String, String)> {
+        let state = self.app_state.read(cx);
+        let mut suggestions = Vec::new();
+        let mut push_unique = |name: &str, value: &str| {
+            if !name.is_empty() && !suggestions.iter().any(|(existing, _)| existing == name) {
+                suggestions.push((name.to_string(), value.to_string()));
+            }
+        };
+
+        if let Some(request_id) = state.active_request_id.as_deref() {
+            for collection in &state.workspace.collections {
+                if collection_contains_request(collection, request_id) {
+                    for var in &collection.variables {
+                        if var.enabled {
+                            push_unique(&var.name, &var.value);
+                        }
+                    }
+                }
+            }
+        }
+
+        for var in &state.workspace.variables {
+            if var.enabled {
+                push_unique(&var.name, &var.value);
+            }
+        }
+
+        let _ = state;
+        for name in self.request_variable_names(cx) {
+            let value = self.variable_value(&name, cx).unwrap_or_default();
+            push_unique(&name, &value);
+        }
+
+        suggestions.sort_by(|a, b| a.0.cmp(&b.0));
+        suggestions
+    }
+
+    pub(super) fn auth_variable_name_for_field(label: &str, value: &str) -> String {
+        if let Some(name) = Self::extract_variable_names(value).first() {
+            return name.clone();
+        }
+
+        let mut out = String::new();
+        let mut uppercase_next = false;
+        for ch in label.trim_end_matches('*').chars() {
+            if ch.is_ascii_alphanumeric() {
+                if out.is_empty() {
+                    out.push(ch.to_ascii_lowercase());
+                } else if uppercase_next {
+                    out.push(ch.to_ascii_uppercase());
+                    uppercase_next = false;
+                } else {
+                    out.push(ch.to_ascii_lowercase());
+                }
+            } else {
+                uppercase_next = !out.is_empty();
+            }
+        }
+        if out.is_empty() {
+            "variable".to_string()
+        } else {
+            out
+        }
     }
 
     pub(super) fn update_auth_config<F>(app_state: &Entity<AppState>, cx: &mut App, f: F)
@@ -962,5 +1067,42 @@ impl RequestPanel {
             auth.oauth_send_credentials = "As Basic Authentication".to_string();
         }
     }
+}
 
+fn insert_variable_reference(current: &str, name: &str) -> String {
+    let reference = format!("{{{{{name}}}}}");
+    if current.trim().is_empty() {
+        return reference;
+    }
+    if current.contains(&reference) {
+        return current.to_string();
+    }
+    if let Some(start) = current.rfind("{{") {
+        if current[start + 2..].find("}}").is_none() {
+            let mut out = current[..start].to_string();
+            out.push_str(&reference);
+            return out;
+        }
+    }
+    format!("{current}{reference}")
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let head = keep / 2;
+    let tail = keep - head;
+    let start: String = value.chars().take(head).collect();
+    let end: String = value
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{start}…{end}")
 }

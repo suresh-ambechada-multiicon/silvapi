@@ -11,6 +11,7 @@ use gpui_component::{
     v_flex,
 };
 
+use super::{AppView, ShortcutInput, ShortcutSpec};
 use crate::state::{AppEvent, AppState};
 use crate::ui::actions::{
     ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
@@ -21,7 +22,6 @@ use crate::ui::collection_panel::CollectionPanel;
 use crate::ui::request_panel::RequestPanel;
 use crate::ui::response_panel::ResponsePanel;
 use crate::ui::top_bar::TopBar;
-use super::{AppView, ShortcutInput, ShortcutSpec};
 
 impl AppView {
     pub(super) fn system_font_families(cx: &App) -> Vec<String> {
@@ -99,7 +99,11 @@ impl AppView {
         cx.refresh_windows();
     }
 
-    pub(super) fn save_font_settings(family: &str, size_input: &Entity<InputState>, cx: &mut Context<Self>) {
+    pub(super) fn save_font_settings(
+        family: &str,
+        size_input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) {
         let family = family.trim().to_string();
         if !family.is_empty() {
             let _ = crate::storage::save_setting("ui.font_family", &family);
@@ -224,5 +228,4 @@ impl AppView {
     pub(super) fn cancel_recording_shortcut(&mut self, cx: &mut Context<Self>) {
         self.finish_recording_shortcut(cx);
     }
-
 }

@@ -22,7 +22,11 @@ use crate::state::{AppEvent, AppState};
 use super::*;
 
 impl ResponsePanel {
-    pub(super) fn render_headers_tab(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_headers_tab(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let (sections, source_text) = {
             let state = self.app_state.read(cx);
             let request_info = current_header_request_info(&state);
@@ -202,11 +206,14 @@ impl ResponsePanel {
                 }))
             })
     }
-
 }
 
 fn current_header_request_info(state: &AppState) -> Option<HeaderRequestInfo> {
-    if let Some(snapshot) = state.response.as_ref().and_then(|response| response.request.as_ref()) {
+    if let Some(snapshot) = state
+        .response
+        .as_ref()
+        .and_then(|response| response.request.as_ref())
+    {
         return Some(HeaderRequestInfo {
             method: snapshot.method.as_str().to_string(),
             url: snapshot.url.clone(),
@@ -226,24 +233,29 @@ fn current_header_request_info(state: &AppState) -> Option<HeaderRequestInfo> {
 
     // No snapshot yet (nothing sent, or a pre-snapshot build): describe the
     // request as currently configured.
-    state.active_request.as_ref().map(|request| HeaderRequestInfo {
-        method: request.method.as_str().to_string(),
-        url: request.url.clone(),
-        resolved_url: Some(state.interpolate_variables(&request.url)),
-        headers: request.headers.clone(),
-        body_type: request.body.body_type.clone(),
-        body: request.body.content.clone(),
-        params: request.params.clone(),
-        urlencoded: request.body.urlencoded.clone(),
-        form_data: request
-            .body
-            .form_data
-            .iter()
-            .map(silvapi_core::models::FormDataPartSnapshot::from_part)
-            .collect(),
-        auth: Some(silvapi_core::models::AuthSnapshot::from_config(&request.auth)),
-        content_type: None,
-        body_bytes: request.body.content.len(),
-        body_truncated: false,
-    })
+    state
+        .active_request
+        .as_ref()
+        .map(|request| HeaderRequestInfo {
+            method: request.method.as_str().to_string(),
+            url: request.url.clone(),
+            resolved_url: Some(state.interpolate_variables(&request.url)),
+            headers: request.headers.clone(),
+            body_type: request.body.body_type.clone(),
+            body: request.body.content.clone(),
+            params: request.params.clone(),
+            urlencoded: request.body.urlencoded.clone(),
+            form_data: request
+                .body
+                .form_data
+                .iter()
+                .map(silvapi_core::models::FormDataPartSnapshot::from_part)
+                .collect(),
+            auth: Some(silvapi_core::models::AuthSnapshot::from_config(
+                &request.auth,
+            )),
+            content_type: None,
+            body_bytes: request.body.content.len(),
+            body_truncated: false,
+        })
 }

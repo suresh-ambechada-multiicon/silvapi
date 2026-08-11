@@ -293,7 +293,10 @@ impl HttpClient {
             detail: None,
         });
 
-        let response = builder.send().await.map_err(|e| describe_reqwest_error(&e))?;
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| describe_reqwest_error(&e))?;
 
         let status = response.status();
         let status_code = status.as_u16();
@@ -328,6 +331,7 @@ impl HttpClient {
             status_text: status_text.clone(),
             headers: headers.clone(),
             body: String::new(),
+            body_base64: None,
             time_ms: start.elapsed().as_millis() as u64,
             size_bytes: 0,
             timeline: timeline.clone(),
@@ -351,8 +355,16 @@ impl HttpClient {
             }
         }
 
-        let body = String::from_utf8_lossy(&body_bytes).to_string();
         let size_bytes = body_bytes.len();
+        let body = if is_textual_response(&headers) {
+            String::from_utf8_lossy(&body_bytes).to_string()
+        } else {
+            format!(
+                "[Binary response: {} · {}]",
+                response_content_type(&headers).unwrap_or("application/octet-stream"),
+                format_response_bytes(size_bytes)
+            )
+        };
 
         let total_ms = start.elapsed().as_millis() as u64;
         timeline.push(silvapi_core::models::TimelineEvent {
@@ -367,19 +379,52 @@ impl HttpClient {
             status_text,
             headers,
             body,
+            body_base64: None,
             time_ms: total_ms,
             size_bytes,
             timeline,
             request: Some(snapshot),
             started_at: None,
             error: None,
-        })
+        }
+        .with_body_bytes(&body_bytes))
     }
 }
 
 impl Default for HttpClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn response_content_type(headers: &[(String, String)]) -> Option<&str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.split(';').next().unwrap_or(value.as_str()).trim())
+}
+
+fn is_textual_response(headers: &[(String, String)]) -> bool {
+    let Some(content_type) = response_content_type(headers).map(str::to_ascii_lowercase) else {
+        return true;
+    };
+
+    content_type.starts_with("text/")
+        || content_type.contains("json")
+        || content_type.contains("xml")
+        || content_type.contains("javascript")
+        || content_type.contains("x-www-form-urlencoded")
+        || content_type.contains("graphql")
+        || content_type.contains("event-stream")
+}
+
+fn format_response_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 

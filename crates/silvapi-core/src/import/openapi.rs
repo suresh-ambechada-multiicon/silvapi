@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use crate::models::{
-    ApiRequest, BodyType, Collection, CollectionItem, Folder, HttpMethod, KeyValue, RequestBody,
+    ApiRequest, AuthConfig, AuthType, BodyType, Collection, CollectionItem, Folder, FormDataPart,
+    FormDataPartKind, HttpMethod, KeyValue, RequestBody,
 };
 
 pub fn import_openapi(input: &str) -> Result<Collection, String> {
@@ -102,53 +103,10 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
             }
             url = append_query_params_to_url(&url, &query_param_names);
 
-            let body = if let Some(content) = op["requestBody"]["content"].as_object() {
-                if content.contains_key("application/json") {
-                    let json_content = &content["application/json"];
-                    let example = &json_content["example"];
-                    let schema_example = &json_content["schema"]["example"];
-                    let examples = &json_content["examples"];
+            let request_body = resolve_ref(&v, &op["requestBody"]);
+            let body = parse_request_body(&v, request_body);
 
-                    let mut body_str = String::new();
-                    if !example.is_null() {
-                        body_str = serde_json::to_string_pretty(example).unwrap_or_default();
-                    } else if !schema_example.is_null() {
-                        body_str = serde_json::to_string_pretty(schema_example).unwrap_or_default();
-                    } else if let Some(ex_obj) = examples.as_object() {
-                        if let Some((_, ex_val)) = ex_obj.iter().next() {
-                            if !ex_val["value"].is_null() {
-                                body_str = serde_json::to_string_pretty(&ex_val["value"])
-                                    .unwrap_or_default();
-                            }
-                        }
-                    }
-
-                    if body_str.is_empty() {
-                        let schema = resolve_ref(&v, &json_content["schema"]);
-                        let default_body = generate_default_from_schema(&v, schema);
-                        if default_body.is_object() && default_body.as_object().unwrap().is_empty()
-                        {
-                            body_str = "{\n  \n}".to_string();
-                        } else {
-                            body_str = serde_json::to_string_pretty(&default_body)
-                                .unwrap_or_else(|_| "{\n  \n}".to_string());
-                        }
-                    }
-
-                    RequestBody {
-                        body_type: BodyType::Json,
-                        content: body_str,
-                        urlencoded: Vec::new(),
-                        form_data: Vec::new(),
-                    }
-                } else {
-                    RequestBody::default()
-                }
-            } else {
-                RequestBody::default()
-            };
-
-            let mut auth = crate::models::AuthConfig::default();
+            let mut auth = AuthConfig::default();
             let mut sec_array = op["security"].as_array();
             if sec_array.is_none() {
                 sec_array = v["security"].as_array();
@@ -160,14 +118,22 @@ pub fn import_openapi(input: &str) -> Result<Collection, String> {
                         let scheme_type = scheme["type"].as_str().unwrap_or("");
                         let scheme_scheme = scheme["scheme"].as_str().unwrap_or("");
                         if scheme_type == "http" && scheme_scheme.to_lowercase() == "bearer" {
-                            auth.auth_type = crate::models::AuthType::Bearer;
+                            auth.auth_type = AuthType::Bearer;
+                            auth.bearer_token = format!("{{{{{first_key}}}}}");
+                            push_unique_variable(&mut col, first_key.as_str(), "");
                         } else if scheme_type == "http" && scheme_scheme.to_lowercase() == "basic" {
-                            auth.auth_type = crate::models::AuthType::Basic;
+                            auth.auth_type = AuthType::Basic;
+                            auth.basic_username = format!("{{{{{first_key}Username}}}}");
+                            auth.basic_password = format!("{{{{{first_key}Password}}}}");
+                            push_unique_variable(&mut col, format!("{first_key}Username"), "");
+                            push_unique_variable(&mut col, format!("{first_key}Password"), "");
                         } else if scheme_type == "apiKey" {
-                            auth.auth_type = crate::models::AuthType::ApiKey;
+                            auth.auth_type = AuthType::ApiKey;
                             auth.api_key_name = scheme["name"].as_str().unwrap_or("").to_string();
+                            auth.api_key_value = format!("{{{{{first_key}}}}}");
                             auth.api_key_in_header =
                                 scheme["in"].as_str().unwrap_or("") == "header";
+                            push_unique_variable(&mut col, first_key.as_str(), "");
                         }
                     }
                 }
@@ -214,6 +180,112 @@ fn resolve_ref<'a>(root: &'a Value, mut val: &'a Value) -> &'a Value {
         }
     }
     val
+}
+
+fn parse_request_body(root: &Value, request_body: &Value) -> RequestBody {
+    let Some(content) = request_body["content"].as_object() else {
+        return RequestBody::default();
+    };
+
+    if content.contains_key("application/json") {
+        return json_request_body(root, &content["application/json"]);
+    }
+
+    if content.contains_key("application/x-www-form-urlencoded") {
+        let fields = schema_fields(
+            root,
+            &content["application/x-www-form-urlencoded"]["schema"],
+        );
+        return RequestBody {
+            body_type: BodyType::UrlEncoded,
+            content: crate::models::build_urlencoded_body(&fields),
+            urlencoded: fields,
+            form_data: Vec::new(),
+        };
+    }
+
+    if content.contains_key("multipart/form-data") {
+        let parts = schema_fields(root, &content["multipart/form-data"]["schema"])
+            .into_iter()
+            .map(|field| FormDataPart {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: field.key,
+                value: field.value,
+                enabled: field.enabled,
+                kind: FormDataPartKind::Text,
+                content_type: String::new(),
+            })
+            .collect();
+        return RequestBody {
+            body_type: BodyType::FormData,
+            content: String::new(),
+            urlencoded: Vec::new(),
+            form_data: parts,
+        };
+    }
+
+    RequestBody::default()
+}
+
+fn json_request_body(root: &Value, json_content: &Value) -> RequestBody {
+    let example = &json_content["example"];
+    let schema_example = &json_content["schema"]["example"];
+    let examples = &json_content["examples"];
+
+    let mut body_str = String::new();
+    if !example.is_null() {
+        body_str = serde_json::to_string_pretty(example).unwrap_or_default();
+    } else if !schema_example.is_null() {
+        body_str = serde_json::to_string_pretty(schema_example).unwrap_or_default();
+    } else if let Some(ex_obj) = examples.as_object() {
+        if let Some((_, ex_val)) = ex_obj.iter().next() {
+            if !ex_val["value"].is_null() {
+                body_str = serde_json::to_string_pretty(&ex_val["value"]).unwrap_or_default();
+            }
+        }
+    }
+
+    if body_str.is_empty() {
+        let schema = resolve_ref(root, &json_content["schema"]);
+        let default_body = generate_default_from_schema(root, schema);
+        if default_body.is_object() && default_body.as_object().unwrap().is_empty() {
+            body_str = "{\n  \n}".to_string();
+        } else {
+            body_str = serde_json::to_string_pretty(&default_body)
+                .unwrap_or_else(|_| "{\n  \n}".to_string());
+        }
+    }
+
+    RequestBody {
+        body_type: BodyType::Json,
+        content: body_str,
+        urlencoded: Vec::new(),
+        form_data: Vec::new(),
+    }
+}
+
+fn schema_fields(root: &Value, schema: &Value) -> Vec<KeyValue> {
+    let schema = resolve_ref(root, schema);
+    schema["properties"]
+        .as_object()
+        .map(|props| {
+            props
+                .iter()
+                .map(|(name, prop)| KeyValue::new(name, schema_default_value(root, prop)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn schema_default_value(root: &Value, schema: &Value) -> String {
+    let value = generate_default_from_schema(root, schema);
+    match value {
+        Value::Null => String::new(),
+        Value::String(value) => value,
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(&value).unwrap_or_default(),
+    }
 }
 
 fn add_server_variables(root: &Value, col: &mut Collection) {

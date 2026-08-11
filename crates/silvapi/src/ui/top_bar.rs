@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, IconName, Sizable as _, WindowExt as _,
@@ -7,8 +8,8 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::Variable};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
+use silvapi_core::models::Variable;
 
 pub struct TopBar {
     app_state: Entity<AppState>,
@@ -91,6 +92,7 @@ impl VariablesDialog {
 
         self.app_state.update(cx, |state, cx| {
             state.workspace.variables = new_vars;
+            cx.emit(AppEvent::WorkspaceChanged);
             cx.emit(AppEvent::SaveNeeded);
         });
     }
@@ -186,8 +188,19 @@ impl Render for VariablesDialog {
 }
 
 impl Render for TopBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app_state = self.app_state.clone();
+        let show_window_controls = cfg!(target_os = "linux") || cfg!(target_os = "windows");
+        let maximize_icon = if window.is_maximized() {
+            IconName::WindowRestore
+        } else {
+            IconName::WindowMaximize
+        };
+        let maximize_tooltip = if window.is_maximized() {
+            "Restore"
+        } else {
+            "Maximize"
+        };
 
         h_flex()
             .px_4()
@@ -406,6 +419,38 @@ impl Render for TopBar {
                         window.dispatch_action(Box::new(crate::ui::actions::OpenSettings), cx);
                     })),
             )
+            .when(show_window_controls, |this| {
+                this.child(
+                    h_flex()
+                        .ml_1()
+                        .gap_1()
+                        .items_center()
+                        .child(
+                            Button::new("window-minimize-btn")
+                                .icon(IconName::WindowMinimize)
+                                .tooltip("Minimize")
+                                .ghost()
+                                .small()
+                                .on_click(|_, window, _| window.minimize_window()),
+                        )
+                        .child(
+                            Button::new("window-maximize-btn")
+                                .icon(maximize_icon)
+                                .tooltip(maximize_tooltip)
+                                .ghost()
+                                .small()
+                                .on_click(|_, window, _| window.zoom_window()),
+                        )
+                        .child(
+                            Button::new("window-close-btn")
+                                .icon(IconName::WindowClose)
+                                .tooltip("Close")
+                                .ghost()
+                                .small()
+                                .on_click(|_, window, _| window.remove_window()),
+                        ),
+                )
+            })
     }
 }
 

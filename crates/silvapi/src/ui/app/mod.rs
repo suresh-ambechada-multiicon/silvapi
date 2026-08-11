@@ -14,9 +14,10 @@ use crate::state::{AppEvent, AppState};
 
 use super::{
     actions::{
-        ApiPicker, CloseSettings, FocusCollectionPanel, FocusRequestPanel,
-        FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, SendRequest,
-        ShortcutNoOp, ThemePicker, ToggleMaximize,
+        ApiPicker, CloseSettings, CloseTab, FocusCollectionPanel, FocusRequestPanel,
+        FocusResponsePanel, FocusUrl, NextApi, OpenSettings, PrevApi, SendRequest, ShortcutNoOp,
+        SwitchLastTab, SwitchTab1, SwitchTab2, SwitchTab3, SwitchTab4, SwitchTab5, SwitchTab6,
+        SwitchTab7, SwitchTab8, SwitchTab9, TabPicker, ThemePicker, ToggleMaximize,
     },
     collection_panel::CollectionPanel,
     request_panel::RequestPanel,
@@ -42,10 +43,17 @@ pub struct AppView {
     theme_search: Entity<InputState>,
     api_picker_open: bool,
     api_search: Entity<InputState>,
-    api_list: Vec<(String, String)>,
+    api_list: Vec<ApiPickerEntry>,
     api_list_query: String,
     api_list_dirty: bool,
     api_cursor: usize,
+    open_tabs: Vec<String>,
+    tab_picker_open: bool,
+    tab_search: Entity<InputState>,
+    tab_list: Vec<ApiPickerEntry>,
+    tab_list_query: String,
+    tab_cursor: usize,
+    tab_scroll: gpui::UniformListScrollHandle,
     settings_open: bool,
     settings_focus: FocusHandle,
     shortcut_inputs: Vec<ShortcutInput>,
@@ -86,6 +94,17 @@ struct ShortcutInput {
     input: Entity<InputState>,
 }
 
+#[derive(Clone)]
+pub(super) struct ApiPickerEntry {
+    pub id: String,
+    pub context: String,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub full_path: String,
+    pub search_text: String,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MaximizedPanel {
     None,
@@ -105,7 +124,6 @@ impl Focusable for AppView {
         self.focus_handle.clone()
     }
 }
-
 
 mod pickers;
 mod settings;
@@ -133,13 +151,14 @@ impl AppView {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(400))
                             .await;
-                        let workspace = app_state.update(cx, |state, _| silvapi_core::models::Workspace {
-                            id: state.workspace.id.clone(),
-                            name: state.workspace.name.clone(),
-                            collections: state.workspace.collections.clone(),
-                            variables: state.workspace.variables.clone(),
-                            response_cache: Default::default(),
-                        });
+                        let workspace =
+                            app_state.update(cx, |state, _| silvapi_core::models::Workspace {
+                                id: state.workspace.id.clone(),
+                                name: state.workspace.name.clone(),
+                                collections: state.workspace.collections.clone(),
+                                variables: state.workspace.variables.clone(),
+                                response_cache: Default::default(),
+                            });
                         let result = cx
                             .background_executor()
                             .spawn(async move { crate::storage::save_workspace(&workspace) })
@@ -153,18 +172,24 @@ impl AppView {
                         let selected = this
                             .api_list
                             .get(this.api_cursor)
-                            .map(|(id, _)| id.clone())
+                            .map(|entry| entry.id.clone())
                             .or_else(|| app_state.read(cx).active_request_id.clone());
                         this.rebuild_api_list(cx);
                         if let Some(selected) = selected {
                             if let Some(idx) =
-                                this.api_list.iter().position(|(id, _)| *id == selected)
+                                this.api_list.iter().position(|entry| entry.id == selected)
                             {
                                 this.api_cursor = idx;
                                 this.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
                             }
                         }
                     }
+                }
+                if matches!(ev, AppEvent::RequestSelected) {
+                    if let Some(id) = app_state.read(cx).active_request_id.clone() {
+                        this.ensure_tab_for_request(id);
+                    }
+                    cx.notify();
                 }
                 if matches!(ev, AppEvent::ToggleLayout) {
                     this.response_layout = match this.response_layout {
@@ -200,8 +225,24 @@ impl AppView {
             |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => this.update_api_list(cx),
                 InputEvent::PressEnter { .. } => {
-                    if let Some((id, _)) = this.api_list.get(this.api_cursor) {
-                        this.select_api_from_picker(id.clone(), window, cx);
+                    if let Some(entry) = this.api_list.get(this.api_cursor) {
+                        this.select_api_from_picker(entry.id.clone(), window, cx);
+                    }
+                }
+                _ => {}
+            },
+        );
+
+        let tab_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tabs..."));
+        let tab_search_sub = cx.subscribe_in(
+            &tab_search,
+            window,
+            |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => this.update_tab_list(cx),
+                InputEvent::PressEnter { .. } => {
+                    if let Some(entry) = this.tab_list.get(this.tab_cursor) {
+                        this.select_tab(entry.id.clone(), window, cx);
+                        this.close_tab_picker(window, cx);
                     }
                 }
                 _ => {}
@@ -347,6 +388,13 @@ impl AppView {
             api_list_query: String::new(),
             api_list_dirty: true,
             api_cursor: 0,
+            open_tabs: Vec::new(),
+            tab_picker_open: false,
+            tab_search,
+            tab_list: Vec::new(),
+            tab_list_query: String::new(),
+            tab_cursor: 0,
+            tab_scroll: gpui::UniformListScrollHandle::new(),
             settings_open: false,
             settings_focus: cx.focus_handle(),
             shortcut_inputs,
@@ -369,6 +417,7 @@ impl AppView {
                     storage_sub,
                     theme_search_sub,
                     api_search_sub,
+                    tab_search_sub,
                     font_search_sub,
                     font_size_sub,
                     font_size_slider_sub,
@@ -381,7 +430,6 @@ impl AppView {
             resize_state_v: cx.new(|_| ResizableState::default()),
         }
     }
-
 }
 
 impl Render for AppView {
@@ -456,22 +504,76 @@ impl Render for AppView {
                 if this.recording_shortcut.is_some() { return; }
                 this.close_settings(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &NextApi, _window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                this.select_adjacent_api(1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &PrevApi, _window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                this.select_adjacent_api(-1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ApiPicker, window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                if this.api_picker_open {
-                    this.close_api_picker(window, cx);
-                } else {
-                    this.open_api_picker(window, cx);
-                }
-            }))
+	            .on_action(cx.listener(|this, _: &NextApi, _window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_adjacent_tab(1, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &PrevApi, _window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_adjacent_tab(-1, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.close_active_tab(window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab1, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(0, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab2, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(1, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab3, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(2, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab4, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(3, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab5, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(4, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab6, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(5, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab7, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(6, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab8, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(7, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchTab9, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                this.select_tab_number(8, window, cx);
+	            }))
+	            .on_action(cx.listener(|this, _: &SwitchLastTab, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                if !this.open_tabs.is_empty() {
+	                    this.select_tab_number(this.open_tabs.len() - 1, window, cx);
+	                }
+	            }))
+	            .on_action(cx.listener(|this, _: &ApiPicker, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                if this.api_picker_open {
+	                    this.close_api_picker(window, cx);
+	                } else {
+	                    this.open_api_picker(window, cx);
+	                }
+	            }))
+	            .on_action(cx.listener(|this, _: &TabPicker, window, cx| {
+	                if this.recording_shortcut.is_some() { return; }
+	                if this.tab_picker_open {
+	                    this.close_tab_picker(window, cx);
+	                } else {
+	                    this.open_tab_picker(window, cx);
+	                }
+	            }))
             .on_action(cx.listener(|this, _: &FocusCollectionPanel, window, cx| {
                 if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
@@ -556,7 +658,7 @@ impl Render for AppView {
                 cx.notify();
             }))
             .child(
-                v_flex().size_full().child(self.top_bar.clone()).child(
+	                v_flex().size_full().child(self.top_bar.clone()).child(self.render_tab_strip(window, cx)).child(
                     div().flex_1().overflow_hidden().child(
                         match self.maximized_panel {
                             MaximizedPanel::Collection => self.collection_panel.clone().into_any_element(),
@@ -719,7 +821,7 @@ impl Render for AppView {
                     self.rebuild_api_list(cx);
                 }
                 let visible_rows = self.api_list.len().max(1).min(10) as f32;
-                let list_height = 8. + visible_rows * 48.;
+                let list_height = 6. + visible_rows * 40.;
                 let panel_height = 62. + list_height;
                 el.child(
                     div()
@@ -740,9 +842,9 @@ impl Render for AppView {
                         .child(
                             div()
                                 .id("api-picker-panel")
-                                .w(px(500.))
+                                .w(px(640.))
                                 .h(px(panel_height))
-                                .max_h(px(520.))
+                                .max_h(px(468.))
                                 .flex()
                                 .flex_col()
                                 .bg(cx.theme().background)
@@ -789,7 +891,7 @@ impl Render for AppView {
                                 .child(
                                     div()
                                         .px_3()
-                                        .py_2()
+                                        .py_1()
                                         .border_b_1()
                                         .border_color(cx.theme().border)
                                         .child(Input::new(&self.api_search)),
@@ -798,7 +900,7 @@ impl Render for AppView {
                                     div()
                                         .id("api-list")
                                         .h(px(list_height))
-                                        .max_h(px(458.))
+                                        .max_h(px(406.))
                                         .min_h_0()
                                         .when(self.api_list.is_empty(), |el| {
                                             el.child(
@@ -832,8 +934,121 @@ impl Render for AppView {
                                 ),
                         ),
                 )
-            })
-            .when(self.font_picker_open, |el| {
+	            })
+	            .when(self.tab_picker_open, |el| {
+	                let visible_rows = self.tab_list.len().max(1).min(10) as f32;
+	                let list_height = 6. + visible_rows * 40.;
+	                let panel_height = 62. + list_height;
+	                el.child(
+	                    div()
+	                        .absolute()
+	                        .top_0()
+	                        .left_0()
+	                        .size_full()
+	                        .flex()
+	                        .items_center()
+	                        .justify_center()
+	                        .occlude()
+	                        .on_mouse_down(
+	                            MouseButton::Left,
+	                            cx.listener(|this, _, window, cx| {
+	                                this.close_tab_picker(window, cx);
+	                            }),
+	                        )
+	                        .child(
+	                            div()
+	                                .id("tab-picker-panel")
+	                                .w(px(680.))
+	                                .h(px(panel_height))
+	                                .max_h(px(468.))
+	                                .flex()
+	                                .flex_col()
+	                                .bg(cx.theme().background)
+	                                .border_1()
+	                                .border_color(cx.theme().border)
+	                                .rounded_lg()
+	                                .shadow_lg()
+	                                .overflow_hidden()
+	                                .occlude()
+	                                .on_key_down(cx.listener(
+	                                    |this, event: &KeyDownEvent, window, cx| {
+	                                        let n = this.tab_list.len();
+	                                        match event.keystroke.key.as_str() {
+	                                            "up" if n > 0 => {
+	                                                if this.tab_cursor > 0 {
+	                                                    this.tab_cursor -= 1;
+	                                                } else {
+	                                                    this.tab_cursor = n - 1;
+	                                                }
+	                                                this.tab_scroll.scroll_to_item(
+	                                                    this.tab_cursor,
+	                                                    ScrollStrategy::Nearest,
+	                                                );
+	                                                cx.notify();
+	                                            }
+	                                            "down" if n > 0 => {
+	                                                this.tab_cursor = (this.tab_cursor + 1) % n;
+	                                                this.tab_scroll.scroll_to_item(
+	                                                    this.tab_cursor,
+	                                                    ScrollStrategy::Nearest,
+	                                                );
+	                                                cx.notify();
+	                                            }
+	                                            "escape" => {
+	                                                this.close_tab_picker(window, cx);
+	                                            }
+	                                            _ => {}
+	                                        }
+	                                    },
+	                                ))
+	                                .child(
+	                                    div()
+	                                        .px_3()
+	                                        .py_1()
+	                                        .border_b_1()
+	                                        .border_color(cx.theme().border)
+	                                        .child(Input::new(&self.tab_search)),
+	                                )
+	                                .child(
+	                                    div()
+	                                        .id("tab-list")
+	                                        .h(px(list_height))
+	                                        .max_h(px(406.))
+	                                        .min_h_0()
+	                                        .when(self.tab_list.is_empty(), |el| {
+	                                            el.child(
+	                                                div()
+	                                                    .w_full()
+	                                                    .px_4()
+	                                                    .py_3()
+	                                                    .text_sm()
+	                                                    .text_color(cx.theme().muted_foreground)
+	                                                    .child("No open tabs"),
+	                                            )
+	                                        })
+	                                        .when(!self.tab_list.is_empty(), |el| {
+	                                            el.child(
+	                                                uniform_list(
+	                                                    "tab-picker-list",
+	                                                    self.tab_list.len(),
+	                                                    cx.processor(
+	                                                        |this: &mut AppView,
+	                                                         range: std::ops::Range<usize>,
+	                                                         _window,
+	                                                         cx| {
+	                                                            this.render_tab_picker_rows(range, cx)
+	                                                        },
+	                                                    ),
+	                                                )
+	                                                .track_scroll(&self.tab_scroll)
+	                                                .size_full(),
+	                                            )
+	                                        }),
+	                                ),
+	                        ),
+	                )
+	            })
+	            .when(self.font_picker_open, |el| {
                 let visible_rows = self.font_list.len().max(1).min(12) as f32;
                 let list_height = 8. + visible_rows * 36.;
                 let panel_height = 62. + list_height;
@@ -1375,4 +1590,3 @@ impl Render for AppView {
             .children(notification_layer)
     }
 }
-

@@ -1,4 +1,6 @@
-use crate::models::{ApiRequest, AuthType, BodyType, HttpMethod, KeyValue};
+use crate::models::{
+    ApiRequest, AuthType, BodyType, FormDataPart, FormDataPartKind, HttpMethod, KeyValue,
+};
 
 pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
     let input = input.trim();
@@ -68,8 +70,19 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
             "--data-urlencode" => {
                 i += 1;
                 if let Some(data) = tokens.get(i) {
-                    req.body.content = data.to_string();
                     req.body.body_type = BodyType::UrlEncoded;
+                    push_urlencoded_field(&mut req, data);
+                    req.body.content = crate::models::build_urlencoded_body(&req.body.urlencoded);
+                    if req.method == HttpMethod::GET {
+                        req.method = HttpMethod::POST;
+                    }
+                }
+            }
+            "-F" | "--form" | "--form-string" => {
+                i += 1;
+                if let Some(part) = tokens.get(i) {
+                    req.body.body_type = BodyType::FormData;
+                    push_form_data_part(&mut req, part, token.as_str() != "--form-string");
                     if req.method == HttpMethod::GET {
                         req.method = HttpMethod::POST;
                     }
@@ -123,6 +136,51 @@ fn parse_url_into(req: &mut ApiRequest, url: &str) {
     } else {
         req.url = url.to_string();
     }
+}
+
+fn push_urlencoded_field(req: &mut ApiRequest, data: &str) {
+    let data = data.strip_prefix('@').unwrap_or(data);
+    let (key, value) = data.split_once('=').unwrap_or((data, ""));
+    if key.is_empty() {
+        return;
+    }
+    req.body.urlencoded.push(KeyValue::new(key, value));
+}
+
+fn push_form_data_part(req: &mut ApiRequest, data: &str, allow_file: bool) {
+    let (name, rest) = data.split_once('=').unwrap_or((data, ""));
+    if name.is_empty() {
+        return;
+    }
+
+    let mut value = rest.to_string();
+    let mut content_type = String::new();
+    let mut kind = FormDataPartKind::Text;
+
+    if allow_file {
+        if let Some(path) = rest.strip_prefix('@') {
+            kind = FormDataPartKind::File;
+            value = path.to_string();
+        }
+    }
+
+    if let Some((main, opts)) = rest.strip_prefix('@').unwrap_or(rest).split_once(';') {
+        value = main.to_string();
+        for opt in opts.split(';') {
+            if let Some(typ) = opt.strip_prefix("type=") {
+                content_type = typ.to_string();
+            }
+        }
+    }
+
+    req.body.form_data.push(FormDataPart {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        value,
+        enabled: true,
+        kind,
+        content_type,
+    });
 }
 
 fn urldeced(s: &str) -> String {

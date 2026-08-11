@@ -48,5 +48,4 @@ impl ResponsePanel {
                     .child(TextView::html("preview-html-view", body)),
             )
     }
-
 }

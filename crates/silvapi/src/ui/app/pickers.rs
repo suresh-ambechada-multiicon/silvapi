@@ -8,9 +8,11 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
+    tooltip::Tooltip,
     v_flex,
 };
 
+use super::{ApiPickerEntry, AppView, ShortcutInput, ShortcutSpec};
 use crate::state::{AppEvent, AppState};
 use crate::ui::actions::{
     ApiPicker, CloseSettings, FocusActiveRequest, FocusCollectionPanel, FocusRequestPanel,
@@ -21,7 +23,6 @@ use crate::ui::collection_panel::CollectionPanel;
 use crate::ui::request_panel::RequestPanel;
 use crate::ui::response_panel::ResponsePanel;
 use crate::ui::top_bar::TopBar;
-use super::{AppView, ShortcutInput, ShortcutSpec};
 
 impl AppView {
     pub(super) fn update_api_list(&mut self, cx: &mut Context<Self>) {
@@ -50,17 +51,17 @@ impl AppView {
         if let (Some(active_id), Some(active_req)) =
             (&state.active_request_id, &state.active_request)
         {
-            if let Some((_, name)) = out.iter_mut().find(|(id, _)| id == active_id) {
-                if let Some((prefix, _)) = name.rsplit_once(" / ") {
-                    *name = format!("{} / {}", prefix, active_req.name);
-                } else {
-                    *name = active_req.name.clone();
-                }
+            if let Some(entry) = out.iter_mut().find(|entry| &entry.id == active_id) {
+                entry.name = active_req.name.clone();
+                entry.method = active_req.method.as_str().to_string();
+                entry.url = active_req.url.clone();
+                entry.full_path = format!("{} / {}", entry.context, entry.name);
+                entry.search_text = api_entry_search_text(entry);
             }
         }
 
         if !query.is_empty() {
-            out.retain(|(_, name)| name.to_lowercase().contains(&query));
+            out.retain(|entry| search_matches(&entry.search_text, &query));
         }
 
         self.api_list = out;
@@ -79,7 +80,7 @@ impl AppView {
     ) -> Vec<AnyElement> {
         let mut rows = Vec::new();
         for idx in range {
-            let Some((id, name)) = self.api_list.get(idx).cloned() else {
+            let Some(entry) = self.api_list.get(idx).cloned() else {
                 continue;
             };
             let is_selected = idx == self.api_cursor;
@@ -98,25 +99,54 @@ impl AppView {
                 div()
                     .id(SharedString::from(format!("api-picker-row-{}", idx)))
                     .w_full()
-                    .h(px(48.))
-                    .px_4()
-                    .py_2()
+                    .h(px(40.))
+                    .px_3()
+                    .py_1()
                     .bg(bg)
                     .cursor_pointer()
+                    .tooltip({
+                        let tooltip = entry.full_path.clone();
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             this.api_cursor = idx;
-                            this.select_api_from_picker(id.clone(), window, cx);
+                            this.select_api_from_picker(entry.id.clone(), window, cx);
                         }),
                     )
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(text_color)
+                        h_flex()
+                            .size_full()
+                            .items_center()
+                            .gap_2()
                             .overflow_hidden()
-                            .text_ellipsis()
-                            .child(name),
+                            .child(
+                                div()
+                                    .max_w(px(230.))
+                                    .min_w(px(110.))
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.context.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.7))
+                                    .child("/"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_sm()
+                                    .text_color(text_color)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.name.clone()),
+                            ),
                     )
                     .into_any_element(),
             );
@@ -127,7 +157,7 @@ impl AppView {
     pub(super) fn collect_reqs(
         items: &[silvapi_core::models::CollectionItem],
         prefix: &str,
-        out: &mut Vec<(String, String)>,
+        out: &mut Vec<ApiPickerEntry>,
     ) {
         for item in items {
             match item {
@@ -136,7 +166,17 @@ impl AppView {
                     Self::collect_reqs(&f.items, &new_pref, out);
                 }
                 silvapi_core::models::CollectionItem::Request(r) => {
-                    out.push((r.id.clone(), format!("{} / {}", prefix, r.name)));
+                    let mut entry = ApiPickerEntry {
+                        id: r.id.clone(),
+                        context: prefix.to_string(),
+                        name: r.name.clone(),
+                        method: r.method.as_str().to_string(),
+                        url: r.url.clone(),
+                        full_path: format!("{} / {}", prefix, r.name),
+                        search_text: String::new(),
+                    };
+                    entry.search_text = api_entry_search_text(&entry);
+                    out.push(entry);
                 }
             }
         }
@@ -158,6 +198,16 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.api_picker_open = false;
+        self.select_tab(req_id, window, cx);
+    }
+
+    pub(super) fn select_tab(
+        &mut self,
+        req_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_tab_for_request(req_id.clone());
         self.app_state.update(cx, |state, cx| {
             if state.select_request(&req_id) {
                 cx.emit(AppEvent::RequestSelected);
@@ -184,7 +234,11 @@ impl AppView {
         self.ensure_api_list_for_query("", cx);
 
         if let Some(active_id) = &self.app_state.read(cx).active_request_id {
-            if let Some(idx) = self.api_list.iter().position(|(id, _)| id == active_id) {
+            if let Some(idx) = self
+                .api_list
+                .iter()
+                .position(|entry| &entry.id == active_id)
+            {
                 self.api_cursor = idx;
                 self.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
             }
@@ -199,43 +253,320 @@ impl AppView {
         });
     }
 
-    pub(super) fn select_adjacent_api(&mut self, step: isize, cx: &mut Context<Self>) {
-        self.ensure_api_list_for_query("", cx);
-        let len = self.api_list.len();
+    pub(super) fn ensure_tab_for_request(&mut self, req_id: String) {
+        if !self.open_tabs.iter().any(|id| id == &req_id) {
+            self.open_tabs.push(req_id);
+        }
+    }
+
+    pub(super) fn active_tab_index(&self, cx: &App) -> Option<usize> {
+        let active_id = self.app_state.read(cx).active_request_id.clone()?;
+        self.open_tabs.iter().position(|id| id == &active_id)
+    }
+
+    pub(super) fn select_adjacent_tab(&mut self, step: isize, cx: &mut Context<Self>) {
+        if self.open_tabs.is_empty() {
+            if let Some(id) = self.app_state.read(cx).active_request_id.clone() {
+                self.ensure_tab_for_request(id);
+            }
+        }
+        let len = self.open_tabs.len();
         if len == 0 {
             return;
         }
-
-        let current_id = self.app_state.read(cx).active_request_id.clone();
-        let current_idx = current_id
-            .as_ref()
-            .and_then(|id| {
-                if self
-                    .api_list
-                    .get(self.api_cursor)
-                    .map(|(rid, _)| rid == id)
-                    .unwrap_or(false)
-                {
-                    Some(self.api_cursor)
-                } else {
-                    self.api_list.iter().position(|(rid, _)| rid == id)
-                }
-            })
-            .unwrap_or(0);
-
-        let target_idx = if step.is_negative() {
-            (current_idx + len - 1) % len
+        let current = self.active_tab_index(cx).unwrap_or(0);
+        let next = if step.is_negative() {
+            (current + len - 1) % len
         } else {
-            (current_idx + 1) % len
+            (current + 1) % len
         };
-        let target_id = self.api_list[target_idx].0.clone();
-        self.api_cursor = target_idx;
-
+        let req_id = self.open_tabs[next].clone();
         self.app_state.update(cx, |state, cx| {
-            if state.select_request(&target_id) {
+            if state.select_request(&req_id) {
                 cx.emit(AppEvent::RequestSelected);
             }
         });
+        cx.notify();
+    }
+
+    pub(super) fn select_tab_number(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(req_id) = self.open_tabs.get(idx).cloned() {
+            self.select_tab(req_id, window, cx);
+        }
+    }
+
+    pub(super) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(idx) = self.active_tab_index(cx) else {
+            return;
+        };
+        self.open_tabs.remove(idx);
+        if let Some(next_id) = self
+            .open_tabs
+            .get(idx)
+            .or_else(|| self.open_tabs.last())
+            .cloned()
+        {
+            self.select_tab(next_id, window, cx);
+        } else {
+            self.app_state.update(cx, |state, _| {
+                state.active_request = None;
+                state.active_request_id = None;
+                state.response = None;
+                state.formatted_response = None;
+                state.error = None;
+            });
+            cx.notify();
+        }
+    }
+
+    pub(super) fn update_tab_list(&mut self, cx: &mut Context<Self>) {
+        let query = self.tab_search.read(cx).value().to_lowercase();
+        self.rebuild_tab_list_for_query(query, cx);
+        cx.notify();
+    }
+
+    pub(super) fn rebuild_tab_list_for_query(&mut self, query: String, cx: &App) {
+        self.ensure_api_list_for_query("", cx);
+        let mut entries = Vec::new();
+        for id in &self.open_tabs {
+            if let Some(entry) = self.api_list.iter().find(|entry| &entry.id == id).cloned() {
+                entries.push(entry);
+            }
+        }
+        if !query.is_empty() {
+            entries.retain(|entry| search_matches(&entry.search_text, &query));
+        }
+        self.tab_list = entries;
+        self.tab_list_query = query;
+        self.tab_cursor = 0;
+        if !self.tab_list.is_empty() {
+            self.tab_scroll.scroll_to_item(0, ScrollStrategy::Nearest);
+        }
+    }
+
+    pub(super) fn open_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_search
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.rebuild_tab_list_for_query(String::new(), cx);
+        if let Some(active_id) = &self.app_state.read(cx).active_request_id {
+            if let Some(idx) = self
+                .tab_list
+                .iter()
+                .position(|entry| &entry.id == active_id)
+            {
+                self.tab_cursor = idx;
+                self.tab_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
+            }
+        }
+        self.tab_picker_open = true;
+        cx.notify();
+        let fh = self.tab_search.read(cx).focus_handle(cx);
+        cx.defer_in(window, move |_, window, cx| {
+            fh.focus(window, cx);
+        });
+    }
+
+    pub(super) fn close_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_picker_open = false;
+        let fh = self.focus_handle.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            fh.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(super) fn render_tab_strip(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.open_tabs.is_empty() {
+            return div().into_any_element();
+        }
+
+        self.ensure_api_list_for_query("", cx);
+        let active_id = self.app_state.read(cx).active_request_id.clone();
+        let tabs = self.open_tabs.clone();
+
+        h_flex()
+            .id("request-tabs")
+            .w_full()
+            .h(px(34.))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .overflow_x_scroll()
+            .children(tabs.into_iter().enumerate().filter_map(|(idx, id)| {
+                let entry = self.api_list.iter().find(|entry| entry.id == id).cloned()?;
+                let is_active = active_id.as_deref() == Some(id.as_str());
+                let bg = if is_active {
+                    cx.theme().muted.opacity(0.14)
+                } else {
+                    gpui::transparent_black()
+                };
+                let border = if is_active {
+                    cx.theme().primary
+                } else {
+                    gpui::transparent_black()
+                };
+                Some(
+                    h_flex()
+                        .id(SharedString::from(format!("request-tab-{}", idx)))
+                        .h_full()
+                        .min_w(px(120.))
+                        .max_w(px(220.))
+                        .px_2()
+                        .gap_1()
+                        .items_center()
+                        .border_b_2()
+                        .border_color(border)
+                        .bg(bg)
+                        .cursor_pointer()
+                        .tooltip({
+                            let tooltip = entry.full_path.clone();
+                            move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                        })
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener({
+                                let id = id.clone();
+                                move |this, _, window, cx| {
+                                    this.select_tab(id.clone(), window, cx);
+                                }
+                            }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(method_color(&entry.method, cx))
+                                .child(entry.method.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_sm()
+                                .text_color(if is_active {
+                                    cx.theme().foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(entry.name.clone()),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("close-tab-{}", idx)))
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Close tab")
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| {
+                                        if let Some(pos) =
+                                            this.open_tabs.iter().position(|tab| tab == &id)
+                                        {
+                                            this.open_tabs.remove(pos);
+                                            if this.app_state.read(cx).active_request_id.as_deref()
+                                                == Some(id.as_str())
+                                            {
+                                                if let Some(next_id) = this
+                                                    .open_tabs
+                                                    .get(pos)
+                                                    .or_else(|| this.open_tabs.last())
+                                                    .cloned()
+                                                {
+                                                    this.select_tab(next_id, window, cx);
+                                                }
+                                            }
+                                            cx.notify();
+                                        }
+                                    }
+                                })),
+                        )
+                        .into_any_element(),
+                )
+            }))
+            .into_any_element()
+    }
+
+    pub(super) fn render_tab_picker_rows(
+        &mut self,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for idx in range {
+            let Some(entry) = self.tab_list.get(idx).cloned() else {
+                continue;
+            };
+            let is_selected = idx == self.tab_cursor;
+            let bg = if is_selected {
+                cx.theme().primary.opacity(0.1)
+            } else {
+                gpui::transparent_black()
+            };
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("tab-picker-row-{}", idx)))
+                    .w_full()
+                    .h(px(40.))
+                    .px_3()
+                    .bg(bg)
+                    .cursor_pointer()
+                    .tooltip({
+                        let tooltip = entry.full_path.clone();
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.tab_cursor = idx;
+                            this.select_tab(entry.id.clone(), window, cx);
+                            this.close_tab_picker(window, cx);
+                        }),
+                    )
+                    .child(
+                        h_flex()
+                            .size_full()
+                            .items_center()
+                            .gap_2()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(method_color(&entry.method, cx))
+                                    .child(entry.method.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_sm()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.full_path.clone()),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(180.))
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.url.clone()),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 
     pub(super) fn update_theme_list(&mut self, cx: &mut Context<Self>) {
@@ -318,5 +649,27 @@ impl AppView {
         if let Some(name) = self.theme_list.get(self.theme_cursor) {
             let _ = crate::storage::save_theme_name(name);
         }
+    }
+}
+
+fn api_entry_search_text(entry: &ApiPickerEntry) -> String {
+    format!(
+        "{} {} {} {} {}",
+        entry.context, entry.name, entry.method, entry.url, entry.full_path
+    )
+    .to_lowercase()
+}
+
+fn search_matches(text: &str, query: &str) -> bool {
+    query.split_whitespace().all(|needle| text.contains(needle))
+}
+
+fn method_color(method: &str, cx: &App) -> Hsla {
+    match method {
+        "GET" => cx.theme().success,
+        "POST" => cx.theme().primary,
+        "PUT" | "PATCH" => cx.theme().warning,
+        "DELETE" => cx.theme().danger,
+        _ => cx.theme().muted_foreground,
     }
 }

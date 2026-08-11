@@ -14,9 +14,9 @@ use gpui_component::{
     v_flex,
 };
 
-use silvapi_core::{models::{AuthConfig, AuthType, CollectionItem, Folder, KeyValue, Variable}};
-use crate::{state::{AppEvent, AppState}};
+use crate::state::{AppEvent, AppState};
 use crate::ui::actions::{FocusActiveRequest, RenameSelected, SendRequest};
+use silvapi_core::models::{AuthConfig, AuthType, CollectionItem, Folder, KeyValue, Variable};
 
 use super::*;
 
@@ -175,7 +175,11 @@ impl CollectionPanel {
         });
     }
 
-    pub(super) fn render_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub(super) fn render_rows(
+        &mut self,
+        range: Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let flat = self.flat_items(cx);
         let renaming_id = self.renaming_id.clone();
         let selected_id = self.selected_id.clone();

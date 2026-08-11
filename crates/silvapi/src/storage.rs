@@ -10,6 +10,7 @@ use silvapi_core::models::{HttpResponse, Workspace};
 
 const DB_FILE: &str = "silvapi.sqlite";
 const MAX_RESPONSE_HISTORY_PER_REQUEST: i64 = 20;
+const IN_MEMORY_RESPONSE_HISTORY_PER_REQUEST: i64 = 5;
 
 pub fn load_workspace() -> Result<Option<Workspace>> {
     let path = db_path()?;
@@ -197,7 +198,7 @@ fn load_response_cache(
          )
          order by request_id asc, id asc",
     )?;
-    let mut rows = stmt.query(params![MAX_RESPONSE_HISTORY_PER_REQUEST])?;
+    let mut rows = stmt.query(params![IN_MEMORY_RESPONSE_HISTORY_PER_REQUEST])?;
     let mut cache: std::collections::HashMap<String, Vec<HttpResponse>> = Default::default();
 
     while let Some(row) = rows.next()? {

@@ -556,6 +556,10 @@ pub struct HttpResponse {
     pub status_text: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// Exact response bytes. Stored as base64 so binary media survives SQLite
+    /// JSON history without lossy UTF-8 conversion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
     pub time_ms: u64,
     pub size_bytes: usize,
     pub timeline: Vec<TimelineEvent>,
@@ -796,6 +800,7 @@ impl HttpResponse {
             status_text: "Failed".to_string(),
             headers: Vec::new(),
             body: String::new(),
+            body_base64: None,
             time_ms,
             size_bytes: 0,
             timeline: Vec::new(),
@@ -829,6 +834,22 @@ impl HttpResponse {
         } else {
             format!("{:.1} MB", self.size_bytes as f64 / (1024.0 * 1024.0))
         }
+    }
+
+    pub fn with_body_bytes(mut self, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+
+        self.body_base64 = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+        self
+    }
+
+    pub fn raw_body_bytes(&self) -> Vec<u8> {
+        use base64::Engine as _;
+
+        self.body_base64
+            .as_deref()
+            .and_then(|body| base64::engine::general_purpose::STANDARD.decode(body).ok())
+            .unwrap_or_else(|| self.body.as_bytes().to_vec())
     }
 }
 

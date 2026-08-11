@@ -6119,7 +6119,7 @@ dependencies = [
 
 [[package]]
 name = "silvapi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6143,8 +6143,9 @@ dependencies = [
 
 [[package]]
 name = "silvapi-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "serde_yaml",

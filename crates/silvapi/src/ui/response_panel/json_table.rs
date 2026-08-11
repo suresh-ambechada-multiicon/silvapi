@@ -5,9 +5,15 @@
 //! single truncated line and the full value is shown in the detail panel below
 //! the table when a cell is selected (see `render_json_table_detail`).
 
+use std::collections::HashSet;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
+use gpui_component::{
+    ActiveTheme, Icon, IconName, Sizable as _,
+    button::{Button, ButtonVariants},
+    table::{Column, ColumnSort, TableDelegate, TableState},
+};
 
 /// Column cap for array-of-objects responses. Wide records would otherwise
 /// build thousands of columns from a single ragged payload.
@@ -30,6 +36,7 @@ pub struct JsonTableDelegate {
     /// Indices into `rows` that pass the current search query, in display order.
     visible: Vec<usize>,
     query: String,
+    collapsed: HashSet<String>,
     /// True when column 0 is a field-name/index column rather than data.
     key_column: bool,
     /// Rows dropped by `MAX_ROWS`, reported in the toolbar so the cap is visible.
@@ -161,6 +168,7 @@ impl JsonTableDelegate {
             rows,
             visible: Vec::new(),
             query: String::new(),
+            collapsed: HashSet::new(),
             key_column,
             truncated_rows,
         };
@@ -230,10 +238,66 @@ impl JsonTableDelegate {
         serde_json::to_string_pretty(&object).ok()
     }
 
+    fn has_children(&self, path: &str) -> bool {
+        self.rows.iter().any(|row| {
+            row.first()
+                .is_some_and(|candidate| is_descendant_path(candidate, path))
+        })
+    }
+
+    fn is_collapsed(&self, path: &str) -> bool {
+        self.collapsed.contains(path)
+    }
+
+    fn toggle_collapsed(&mut self, path: &str) {
+        if !self.has_children(path) {
+            return;
+        }
+        if !self.collapsed.remove(path) {
+            self.collapsed.insert(path.to_string());
+        }
+        self.reindex();
+    }
+
+    pub fn visible_csv(&self) -> String {
+        let mut out = String::new();
+        out.push_str(
+            &self
+                .columns
+                .iter()
+                .map(|column| csv_cell(column.name.as_ref()))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        for row_ix in &self.visible {
+            if let Some(row) = self.rows.get(*row_ix) {
+                out.push('\n');
+                out.push_str(
+                    &row.iter()
+                        .map(|cell| csv_cell(cell))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+        }
+        out
+    }
+
     /// Recompute `visible` from the query, then apply the active column sort.
     fn reindex(&mut self) {
         self.visible = (0..self.rows.len())
             .filter(|&ix| {
+                if self.key_column {
+                    if let Some(path) = self.rows[ix].first() {
+                        if self
+                            .collapsed
+                            .iter()
+                            .any(|collapsed| is_descendant_path(path, collapsed))
+                        {
+                            return false;
+                        }
+                    }
+                }
                 self.query.is_empty()
                     || self.rows[ix]
                         .iter()
@@ -241,12 +305,17 @@ impl JsonTableDelegate {
             })
             .collect();
 
-        let Some((col_ix, sort)) = self.columns.iter().enumerate().find_map(|(ix, column)| {
-            match column.sort {
-                Some(sort @ (ColumnSort::Ascending | ColumnSort::Descending)) => Some((ix, sort)),
-                _ => None,
-            }
-        }) else {
+        let Some((col_ix, sort)) =
+            self.columns
+                .iter()
+                .enumerate()
+                .find_map(|(ix, column)| match column.sort {
+                    Some(sort @ (ColumnSort::Ascending | ColumnSort::Descending)) => {
+                        Some((ix, sort))
+                    }
+                    _ => None,
+                })
+        else {
             return;
         };
 
@@ -255,9 +324,9 @@ impl JsonTableDelegate {
             let left = rows[a].get(col_ix).map(String::as_str).unwrap_or("");
             let right = rows[b].get(col_ix).map(String::as_str).unwrap_or("");
             let ordering = match (left.parse::<f64>(), right.parse::<f64>()) {
-                (Ok(left), Ok(right)) => {
-                    left.partial_cmp(&right).unwrap_or(std::cmp::Ordering::Equal)
-                }
+                (Ok(left), Ok(right)) => left
+                    .partial_cmp(&right)
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 _ => left.to_lowercase().cmp(&right.to_lowercase()),
             };
             if sort == ColumnSort::Descending {
@@ -332,11 +401,11 @@ impl TableDelegate for JsonTableDelegate {
         row_ix: usize,
         col_ix: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let value = self.cell(row_ix, col_ix).unwrap_or_default();
         let strong = self.key_column && col_ix == 0;
-        div()
+        let cell = div()
             .w_full()
             // min_w(0) is what actually lets the cell shrink below its text's
             // intrinsic width; without it the text sets the floor and spills
@@ -344,8 +413,63 @@ impl TableDelegate for JsonTableDelegate {
             .min_w(px(0.))
             .truncate()
             .text_sm()
-            .when(strong, |el| el.font_weight(FontWeight::MEDIUM))
-            .child(single_line(value))
+            .when(strong, |el| el.font_weight(FontWeight::MEDIUM));
+
+        if strong {
+            let (depth, leaf, nested) = field_path_view(value);
+            let has_children = self.has_children(value);
+            let collapsed = self.is_collapsed(value);
+            let path = value.to_string();
+            cell.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w(px(0.))
+                    .pl(px((depth.min(6) * 14) as f32))
+                    .child(if has_children {
+                        Button::new(("json-field-toggle", row_ix))
+                            .icon(if collapsed {
+                                IconName::ChevronRight
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .tooltip(if collapsed {
+                                "Expand field"
+                            } else {
+                                "Collapse field"
+                            })
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(move |state, _, _, cx| {
+                                state.delegate_mut().toggle_collapsed(&path);
+                                state.refresh(cx);
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    } else if nested {
+                        div()
+                            .w(px(24.))
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .size(px(12.))
+                                    .text_color(cx.theme().muted_foreground.opacity(0.45)),
+                            )
+                            .into_any_element()
+                    } else {
+                        div().w(px(24.)).into_any_element()
+                    })
+                    .child(div().min_w(px(0.)).truncate().child(single_line(leaf))),
+            )
+        } else {
+            cell.child(
+                div()
+                    .pl_2()
+                    .min_w(px(0.))
+                    .truncate()
+                    .child(single_line(value)),
+            )
+        }
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
@@ -368,6 +492,24 @@ fn single_line(value: &str) -> String {
     format!("{}…", &collapsed[..end])
 }
 
+fn field_path_view(path: &str) -> (usize, &str, bool) {
+    let depth = path.matches('.').count() + path.matches('[').count();
+    let leaf_start = path
+        .rfind('.')
+        .map(|ix| ix + 1)
+        .or_else(|| path.rfind('['))
+        .unwrap_or(0);
+    (depth, &path[leaf_start..], depth > 0)
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// Flatten nested objects into `parent.child` rows, and arrays into
 /// `parent[0]` rows when they contain objects.
 pub fn flatten_json_object(
@@ -387,21 +529,33 @@ fn flatten_json_value(path: &str, value: &serde_json::Value, rows: &mut Vec<(Str
                 rows.push((path.to_string(), "{}".to_string()));
                 return;
             }
+            rows.push((path.to_string(), format!("{{{} fields}}", object.len())));
             for (key, value) in object {
                 flatten_json_value(&format!("{path}.{key}"), value, rows);
             }
         }
         serde_json::Value::Array(values) => {
+            if values.is_empty() {
+                rows.push((path.to_string(), "[]".to_string()));
+                return;
+            }
             if values.iter().all(|value| !value.is_object()) {
                 rows.push((path.to_string(), json_cell_text(value)));
                 return;
             }
+            rows.push((path.to_string(), format!("[{} items]", values.len())));
             for (idx, value) in values.iter().enumerate() {
                 flatten_json_value(&format!("{path}[{idx}]"), value, rows);
             }
         }
         _ => rows.push((path.to_string(), json_cell_text(value))),
     }
+}
+
+fn is_descendant_path(candidate: &str, parent: &str) -> bool {
+    candidate.len() > parent.len()
+        && candidate.starts_with(parent)
+        && matches!(candidate.as_bytes().get(parent.len()), Some(b'.' | b'['))
 }
 
 pub fn json_cell_text(value: &serde_json::Value) -> String {

@@ -23,9 +23,17 @@ pub struct HttpClient {
 fn describe_reqwest_error(e: &reqwest::Error) -> String {
     use std::error::Error;
 
+    // `is_connect` is a native-only classifier: the browser's fetch collapses
+    // DNS, TLS and connection-refused into one opaque failure for privacy
+    // reasons, so on the web those land in the generic bucket below.
+    #[cfg(not(target_family = "wasm"))]
+    let connect_failed = e.is_connect();
+    #[cfg(target_family = "wasm")]
+    let connect_failed = false;
+
     let category = if e.is_timeout() {
         "Request timed out"
-    } else if e.is_connect() {
+    } else if connect_failed {
         "Connection failed"
     } else if e.is_redirect() {
         "Too many redirects"
@@ -340,20 +348,39 @@ impl HttpClient {
             error: None,
         });
 
-        let mut body_bytes = Vec::new();
-        use futures::StreamExt;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    body_bytes.extend_from_slice(&bytes);
-                    on_chunk(&bytes);
-                }
-                Err(e) => {
-                    return Err(format!("Failed to read response body: {}", e));
+        // Native reqwest streams the body chunk by chunk, so `on_chunk` fires as
+        // data arrives and SSE works. The wasm build is fetch-backed and exposes
+        // no body stream, so the whole body arrives at once and is delivered as a
+        // single chunk — progressive rendering and live SSE are lost on the web.
+        #[cfg(not(target_family = "wasm"))]
+        let body_bytes = {
+            let mut body_bytes = Vec::new();
+            use futures::StreamExt;
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        body_bytes.extend_from_slice(&bytes);
+                        on_chunk(&bytes);
+                    }
+                    Err(e) => {
+                        return Err(format!("Failed to read response body: {}", e));
+                    }
                 }
             }
-        }
+            body_bytes
+        };
+
+        #[cfg(target_family = "wasm")]
+        let body_bytes = {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read response body: {}", e))?;
+            let body_bytes = bytes.to_vec();
+            on_chunk(&body_bytes);
+            body_bytes
+        };
 
         let size_bytes = body_bytes.len();
         let body = if is_textual_response(&headers) {

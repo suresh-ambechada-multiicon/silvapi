@@ -48,8 +48,9 @@ pub struct AppState {
     /// Most-recently-used id is last. Not persisted.
     cache_order: Vec<String>,
     /// Abort handles for in-flight async requests, keyed by run_id. Cancelling
-    /// aborts the tokio task mid-flight (real cancellation of the network I/O).
-    run_abort: HashMap<u64, tokio::task::AbortHandle>,
+    /// aborts the task mid-flight. Natively that really stops the network I/O; on
+    /// the web it stops the result being delivered. See `crate::runtime`.
+    run_abort: HashMap<u64, crate::runtime::AbortHandle>,
 }
 
 /// Maximum number of distinct requests whose responses are kept in the
@@ -297,7 +298,7 @@ impl AppState {
 
     /// Register the abort handle for an in-flight request's task so it can be
     /// cancelled mid-flight.
-    pub fn register_run_abort(&mut self, run_id: u64, handle: tokio::task::AbortHandle) {
+    pub fn register_run_abort(&mut self, run_id: u64, handle: crate::runtime::AbortHandle) {
         self.run_abort.insert(run_id, handle);
     }
 
@@ -349,7 +350,7 @@ impl AppState {
             return;
         };
         if let Some(activity) = self.request_activity.get_mut(&id) {
-            // Abort the in-flight tokio tasks so the network I/O actually stops.
+            // Abort the in-flight tasks so the request stops being processed.
             for run_id in activity.running_run_ids.drain(..) {
                 if let Some(handle) = self.run_abort.remove(&run_id) {
                     handle.abort();

@@ -25,3 +25,7 @@ inherits = "release"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# gpui_web needs a one-line fix to build single-threaded; see vendor/gpui_web.
+[patch."https://github.com/zed-industries/zed"]
+gpui_web = { path = "vendor/gpui_web" }

@@ -6,21 +6,53 @@ edition.workspace = true
 [dependencies]
 silvapi-core = { path = "../silvapi-core" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
-font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", package = "zed-font-kit", version = "0.14.1-zed" }
 anyhow = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { version = "0.11", features = ["json", "rustls-tls", "stream"], default-features = false }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
 uuid = { workspace = true }
 futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4.45"
 rand = "0.10.1"
 rust-embed = "8.11.0"
+log = "0.4"
+
+# Native only. font-kit pulls freetype-sys, a C library with no wasm libc;
+# rusqlite bundles SQLite the same way; tokio's multi-thread runtime needs real
+# OS threads. On the web gpui_web supplies text shaping, storage is the browser's,
+# and the single-threaded executor is the event loop.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
+font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", package = "zed-font-kit", version = "0.14.1-zed" }
+reqwest = { version = "0.11", features = [
+    "json",
+    "rustls-tls",
+    "stream",
+], default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+# gpui_web directly rather than via gpui_platform: gpui_platform enables
+# gpui_web's default "multithreaded" feature, which pulls wasm_thread and needs
+# a nightly compiler (feature(stdarch_wasm_atomic_wait)). Cargo unifies features,
+# so the only way to keep it off is to not depend on gpui_platform here.
+gpui_web = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", default-features = false }
+console_error_panic_hook = "0.1"
+# fetch-backed reqwest: no rustls, no streaming body, no native TLS.
+reqwest = { version = "0.11", features = ["json"], default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element"] }
+# Both majors are in the tree via different dependents, and each needs its
+# wasm backend switched on explicitly or it refuses to build for this target.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

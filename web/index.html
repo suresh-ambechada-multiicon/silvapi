@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>Silvapi</title>
+    <!-- Inline favicon purely to stop the browser's automatic /favicon.ico 404. -->
+    <link rel="icon" href="data:," />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0f1419;
+        color: #cbd5e1;
+        font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      /* gpui_web creates its own <canvas> and appends it to <body>, so the page
+         only has to give it a full-viewport, unscrolled box to live in. */
+      #status {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        padding: 24px;
+      }
+      #status.hidden {
+        display: none;
+      }
+      code,
+      pre {
+        font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+        background: #1c2430;
+        border-radius: 6px;
+      }
+      code {
+        padding: 2px 6px;
+      }
+      pre {
+        padding: 12px 14px;
+        text-align: left;
+        overflow-x: auto;
+        max-width: min(90vw, 780px);
+      }
+      .err {
+        max-width: 70ch;
+      }
+      .err strong {
+        color: #ff6b81;
+        font-size: 15px;
+      }
+      .muted {
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">
+      <div>Loading Silvapi…</div>
+      <div class="muted">fetching WebAssembly</div>
+    </div>
+
+    <script type="module">
+      const status = document.getElementById("status");
+      const show = (html) => {
+        status.classList.remove("hidden");
+        status.innerHTML = html;
+      };
+      const fail = (title, body) =>
+        show(`<div class="err"><strong>${title}</strong><br><br>${body}</div>`);
+
+      // gpui renders through WebGPU and has no WebGL fallback. Probe for a real
+      // adapter before downloading ~10MB of wasm: `navigator.gpu` existing does
+      // not mean an adapter can actually be acquired, which is the usual outcome
+      // on Linux where Chrome ships WebGPU disabled.
+      const chromeFlags =
+        "google-chrome-stable --enable-unsafe-webgpu --enable-features=Vulkan http://localhost:3000";
+
+      if (!("gpu" in navigator)) {
+        fail(
+          "WebGPU is not available in this browser",
+          `Silvapi's renderer is WebGPU-only.<br><br>
+           Use Chrome or Edge 113+, or enable <code>dom.webgpu.enabled</code> in Firefox.<br>
+           WebGPU is only exposed on <code>localhost</code> or HTTPS.`,
+        );
+      } else {
+        let adapter = null;
+        try {
+          adapter = await navigator.gpu.requestAdapter();
+        } catch (error) {
+          console.warn("requestAdapter threw", error);
+        }
+
+        if (!adapter) {
+          fail(
+            "No WebGPU adapter available",
+            `The browser exposes WebGPU but could not provide a graphics adapter,
+             so the renderer cannot start.<br><br>
+             On Linux, Chrome ships WebGPU off by default. Relaunch it with:
+             <pre>${chromeFlags}</pre>
+             Then confirm at <code>chrome://gpu</code> that WebGPU is
+             <em>Hardware accelerated</em>.`,
+          );
+        } else {
+          status.querySelector(".muted").textContent = `renderer: ${
+            adapter.info?.vendor || "webgpu"
+          }`;
+          try {
+            const init = (await import("./silvapi.js")).default;
+            // The module runs `start` itself via #[wasm_bindgen(start)].
+            await init();
+            // Rust hides this element on success and rewrites it on failure.
+            if (status.innerHTML.includes("Loading")) status.classList.add("hidden");
+          } catch (error) {
+            console.error(error);
+            fail("Failed to start", `<pre>${String(error)}</pre>`);
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

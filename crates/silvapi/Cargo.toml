@@ -48,7 +48,7 @@ console_error_panic_hook = "0.1"
 reqwest = { version = "0.11", features = ["json"], default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element", "Location"] }
 # Both majors are in the tree via different dependents, and each needs its
 # wasm backend switched on explicitly or it refuses to build for this target.
 getrandom = { version = "0.3", features = ["wasm_js"] }

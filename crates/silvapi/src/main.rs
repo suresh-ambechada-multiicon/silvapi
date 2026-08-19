@@ -24,9 +24,16 @@ pub fn start() {
     console_error_panic_hook::set_once();
     gpui_web::init_logging();
 
+    // Icons are fetched at runtime, and the wasm build of reqwest cannot resolve
+    // a relative URL — it has no base to resolve against and fails with a bare
+    // "builder error". So hand it this document's absolute origin.
+    let origin = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default();
+
     let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(false));
     let app = Application::with_platform(platform)
-        .with_assets(gpui_component_assets::Assets::default());
+        .with_assets(gpui_component_assets::Assets::new(origin));
     run(app);
 }
 

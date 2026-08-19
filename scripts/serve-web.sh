@@ -38,4 +38,19 @@ wasm-bindgen "$wasm" --out-dir web --target web --no-typescript
 
 echo "==> serving http://localhost:3000  (Ctrl+C to stop)"
 cd web
-exec python3 -m http.server 3000
+# COOP/COEP are what gate SharedArrayBuffer, which gpui_web's multithreaded
+# dispatcher needs. Harmless for the single-threaded build, and required the
+# moment threads are enabled, so always send them.
+exec python3 - <<'PY'
+import functools, http.server
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # The bundle is rebuilt constantly during development.
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+http.server.test(HandlerClass=Handler, port=3000, bind="127.0.0.1")
+PY

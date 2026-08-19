@@ -26,8 +26,7 @@ use crate::ui::top_bar::TopBar;
 
 impl AppView {
     pub(super) fn update_api_list(&mut self, cx: &mut Context<Self>) {
-        let query = self.api_search.read(cx).value().to_lowercase();
-        self.ensure_api_list_for_query(&query, cx);
+        self.api_list_dirty = true;
         cx.notify();
     }
 
@@ -653,15 +652,29 @@ impl AppView {
 }
 
 fn api_entry_search_text(entry: &ApiPickerEntry) -> String {
-    format!(
+    let raw = format!(
         "{} {} {} {} {}",
         entry.context, entry.name, entry.method, entry.url, entry.full_path
-    )
-    .to_lowercase()
+    );
+    format!("{} {}", raw.to_lowercase(), normalize_search_text(&raw))
 }
 
 fn search_matches(text: &str, query: &str) -> bool {
-    query.split_whitespace().all(|needle| text.contains(needle))
+    normalize_search_text(query)
+        .split_whitespace()
+        .all(|needle| text.contains(needle))
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 fn method_color(method: &str, cx: &App) -> Hsla {

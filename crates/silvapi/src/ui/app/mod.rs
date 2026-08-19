@@ -817,9 +817,8 @@ impl Render for AppView {
             })
             // ── Centered API picker overlay ──────────────────────────────
             .when(self.api_picker_open, |el| {
-                if self.api_list_dirty {
-                    self.rebuild_api_list(cx);
-                }
+                let query = self.api_search.read(cx).value().to_lowercase();
+                self.ensure_api_list_for_query(&query, cx);
                 let visible_rows = self.api_list.len().max(1).min(10) as f32;
                 let list_height = 6. + visible_rows * 40.;
                 let panel_height = 62. + list_height;

@@ -360,7 +360,18 @@ impl WebWindowInner {
         let closure = Closure::<dyn FnMut(JsValue)>::new(move |_event: JsValue| {
             this.notify_scale.set(true);
             this.observe_canvas(&observer);
-            this.watch_dpr_changes(&observer);
+
+            // Upstream re-armed the watch synchronously here, but that stores a
+            // fresh MqlHandle over `mql_handle`, dropping the very closure this
+            // body is running inside — wasm-bindgen then reports "closure
+            // invoked recursively or after being dropped". Defer the re-arm so
+            // the current invocation has returned before the old closure is
+            // freed.
+            let this = Rc::clone(&this);
+            let observer = observer.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                this.watch_dpr_changes(&observer);
+            });
         });
 
         mql.add_event_listener_with_callback("change", closure.as_ref().unchecked_ref())

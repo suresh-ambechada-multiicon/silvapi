@@ -14,6 +14,17 @@ fn main() {
     run(gpui_platform::application().with_assets(gpui_component_assets::Assets));
 }
 
+/// Assets endpoint for the web build: icons are fetched at runtime, and the wasm
+/// build of reqwest cannot resolve a relative URL — it has no base to resolve
+/// against and fails with a bare "builder error". So hand it this document's
+/// absolute origin.
+#[cfg(target_family = "wasm")]
+fn asset_origin() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default()
+}
+
 /// Web entry point, invoked from JavaScript once the wasm module is loaded.
 ///
 /// Assets are fetched from a URL rather than embedded: the web build downloads
@@ -21,20 +32,12 @@ fn main() {
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
-    console_error_panic_hook::set_once();
-    gpui_web::init_logging();
+    // Installs the panic hook and logging; the same call upstream's web example
+    // makes before starting the app.
+    gpui_platform::web_init();
 
-    // Icons are fetched at runtime, and the wasm build of reqwest cannot resolve
-    // a relative URL — it has no base to resolve against and fails with a bare
-    // "builder error". So hand it this document's absolute origin.
-    let origin = web_sys::window()
-        .and_then(|window| window.location().origin().ok())
-        .unwrap_or_default();
-
-    let platform = std::rc::Rc::new(gpui_web::WebPlatform::new(false));
-    let app = Application::with_platform(platform)
-        .with_assets(gpui_component_assets::Assets::new(origin));
-    run(app);
+    run(gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets::new(asset_origin())));
 }
 
 fn run(app: Application) {
@@ -66,8 +69,9 @@ fn run(app: Application) {
             cx.new(|cx| Root::new(view, window, cx))
         });
 
-        if let Err(error) = opened {
-            report_startup_failure(&format!("{error:#}"));
+        match opened {
+            Ok(_) => cx.activate(true),
+            Err(error) => report_startup_failure(&format!("{error:#}")),
         }
     });
 }

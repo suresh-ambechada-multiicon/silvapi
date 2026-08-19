@@ -42,8 +42,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # gpui_web's default "multithreaded" feature, which pulls wasm_thread and needs
 # a nightly compiler (feature(stdarch_wasm_atomic_wait)). Cargo unifies features,
 # so the only way to keep it off is to not depend on gpui_platform here.
-gpui_web = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", default-features = false }
-console_error_panic_hook = "0.1"
+# gpui_platform on the web too, matching upstream's hello_web example: it pulls
+# gpui_web with its default `multithreaded` feature, whose background dispatcher
+# runs work on web workers. That needs SharedArrayBuffer (hence COOP/COEP) and a
+# nightly compiler; scripts/serve-web.sh sets both up.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 # fetch-backed reqwest: no rustls, no streaming body, no native TLS.
 reqwest = { version = "0.11", features = ["json"], default-features = false }
 wasm-bindgen = "0.2"

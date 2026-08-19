@@ -14,7 +14,10 @@ license = "Apache-2.0"
 autoexamples = false
 
 [features]
-default = []
+# Matches upstream. gpui_platform depends on this crate with default features, so
+# emptying `default` here silently disabled threading and left the dispatcher
+# reporting "SharedArrayBuffer not available".
+default = ["multithreaded"]
 multithreaded = ["dep:wasm_thread"]
 
 [lib]

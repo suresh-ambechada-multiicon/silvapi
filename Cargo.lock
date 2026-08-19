@@ -2618,6 +2618,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm_thread",
  "web-sys",
  "web-time",
 ]
@@ -6123,7 +6124,6 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
- "console_error_panic_hook",
  "futures",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -6131,7 +6131,6 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
- "gpui_web",
  "log",
  "rand 0.10.1",
  "reqwest",
@@ -7537,6 +7536,18 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm_thread"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7516db7f32decdadb1c3b8deb1b7d78b9df7606c5cc2f6241737c2ab3a0258e"
+dependencies = [
+ "futures",
+ "js-sys",
+ "wasm-bindgen",
  "web-sys",
 ]
 

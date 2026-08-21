@@ -536,7 +536,7 @@ impl ResponsePanel {
                         .p_3()
                         .id("sse-detail-scroll")
                         .child(
-                            Input::new(&self.sse_detail_editor)
+                            Editor::new(&self.sse_detail_editor)
                                 .min_w_0()
                                 .h_full()
                                 .w_full(),

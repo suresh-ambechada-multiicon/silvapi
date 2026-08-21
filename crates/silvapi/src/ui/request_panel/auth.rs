@@ -936,10 +936,10 @@ impl RequestPanel {
 
     pub(super) fn auth_multiline_field(
         label: &'static str,
-        input: &Entity<InputState>,
+        input: &Entity<EditorState>,
         cx: &App,
     ) -> impl IntoElement {
-        Self::auth_select_field(label, Input::new(input).h(px(82.)).w_full(), cx)
+        Self::auth_select_field(label, Editor::new(input).h(px(82.)).w_full(), cx)
     }
 
     pub(super) fn auth_variable_suggestions(&self, cx: &App) -> Vec<(String, String)> {

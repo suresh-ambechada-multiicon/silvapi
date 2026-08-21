@@ -138,6 +138,7 @@ impl RequestPanel {
         for input in self.auth_inputs.all() {
             add_from(input.read(cx).value().as_ref());
         }
+        add_from(self.auth_inputs.jwt_payload.read(cx).value().as_ref());
         names
     }
 

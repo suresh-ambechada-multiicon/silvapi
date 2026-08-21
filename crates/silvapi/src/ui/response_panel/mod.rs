@@ -6,7 +6,7 @@ use gpui_component::{
     ActiveTheme, IconName, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     resizable::{ResizableState, resizable_panel, v_resizable},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
@@ -144,9 +144,9 @@ impl ResponseTab {
 pub struct ResponsePanel {
     app_state: Entity<AppState>,
     active_tab: ResponseTab,
-    response_editor: Entity<InputState>,
-    sse_detail_editor: Entity<InputState>,
-    headers_editor: Entity<InputState>,
+    response_editor: Entity<EditorState>,
+    sse_detail_editor: Entity<EditorState>,
+    headers_editor: Entity<EditorState>,
     table_search_input: Entity<InputState>,
     response_text: String,
     soft_wrap: bool,
@@ -192,27 +192,27 @@ mod timeline;
 impl ResponsePanel {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let response_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
+            EditorState::new(window, cx)
+                .language("json")
+                .folding(true)
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
                 .soft_wrap(true)
         });
         let sse_detail_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
+            EditorState::new(window, cx)
+                .language("json")
+                .folding(true)
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Message detail")
                 .soft_wrap(true)
         });
         let headers_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("http")
+            EditorState::new(window, cx)
+                .language("http")
+                .folding(true)
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Headers")
@@ -537,7 +537,7 @@ impl Render for ResponsePanel {
                                         .flex_1()
                                         .size_full()
                                         .p_1()
-                                        .child(Input::new(&self.response_editor).h_full().w_full()),
+                                        .child(Editor::new(&self.response_editor).h_full().w_full()),
                                 )
                             }
                         }

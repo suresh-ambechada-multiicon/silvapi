@@ -6,7 +6,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     spinner::Spinner,
     v_flex,
@@ -89,7 +89,7 @@ struct FolderAuthInputs {
     aws_region: Entity<InputState>,
     aws_session_token: Entity<InputState>,
     jwt_secret: Entity<InputState>,
-    jwt_payload: Entity<InputState>,
+    jwt_payload: Entity<EditorState>,
     oauth_client_id: Entity<InputState>,
     oauth_client_secret: Entity<InputState>,
     oauth_authorization_url: Entity<InputState>,
@@ -119,7 +119,6 @@ impl FolderAuthInputs {
             self.aws_region.clone(),
             self.aws_session_token.clone(),
             self.jwt_secret.clone(),
-            self.jwt_payload.clone(),
             self.oauth_client_id.clone(),
             self.oauth_client_secret.clone(),
             self.oauth_authorization_url.clone(),
@@ -152,7 +151,7 @@ pub struct CollectionPanel {
     folder_settings_id: Option<String>,
     folder_settings_tab: FolderSettingsTab,
     folder_name_input: Entity<InputState>,
-    folder_description_input: Entity<InputState>,
+    folder_description_input: Entity<TextareaState>,
     folder_header_rows: Vec<KvRow>,
     folder_variable_rows: Vec<KvRow>,
     folder_auth_enabled: bool,
@@ -179,8 +178,7 @@ impl CollectionPanel {
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search..."));
         let folder_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
         let folder_description_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .soft_wrap(true)
                 .placeholder("Folder description")
         });
@@ -697,10 +695,10 @@ fn folder_auth_input_field(
 
 fn folder_auth_multiline_field(
     label: &'static str,
-    input: &Entity<InputState>,
+    input: &Entity<EditorState>,
     cx: &App,
 ) -> impl IntoElement {
-    folder_auth_select_field(label, Input::new(input).h(px(82.)).w_full(), cx)
+    folder_auth_select_field(label, Editor::new(input).h(px(82.)).w_full(), cx)
 }
 
 fn folder_kv_header(cx: &mut Context<CollectionPanel>) -> AnyElement {

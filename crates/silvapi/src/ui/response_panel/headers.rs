@@ -118,7 +118,7 @@ impl ResponsePanel {
                     .id("resp-headers-editor")
                     .flex_1()
                     .p_1()
-                    .child(Input::new(&self.headers_editor).h_full().w_full())
+                    .child(Editor::new(&self.headers_editor).h_full().w_full())
                     .into_any_element()
             } else {
                 table.into_any_element()

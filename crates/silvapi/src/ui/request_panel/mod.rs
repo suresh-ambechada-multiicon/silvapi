@@ -7,7 +7,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     tab::{Tab, TabBar},
     v_flex,
 };
@@ -52,7 +52,7 @@ pub struct RequestPanel {
     app_state: Entity<AppState>,
     active_tab: RequestTab,
     url_input: Entity<InputState>,
-    body_editor: Entity<InputState>,
+    body_editor: Entity<EditorState>,
     body_wrap: bool,
     auth_inputs: AuthInputs,
     url_variable_rows: Vec<UrlVariableRow>,
@@ -94,7 +94,10 @@ struct AuthInputs {
     aws_region: Entity<InputState>,
     aws_session_token: Entity<InputState>,
     jwt_secret: Entity<InputState>,
-    jwt_payload: Entity<InputState>,
+    /// A JSON body, so this one is a code editor rather than a single-line field.
+    /// That makes it a different type from the rest, which is why `all()` omits
+    /// it and the call sites handle it explicitly.
+    jwt_payload: Entity<EditorState>,
     oauth_client_id: Entity<InputState>,
     oauth_client_secret: Entity<InputState>,
     oauth_authorization_url: Entity<InputState>,
@@ -124,7 +127,6 @@ impl AuthInputs {
             self.aws_region.clone(),
             self.aws_session_token.clone(),
             self.jwt_secret.clone(),
-            self.jwt_payload.clone(),
             self.oauth_client_id.clone(),
             self.oauth_client_secret.clone(),
             self.oauth_authorization_url.clone(),
@@ -222,11 +224,11 @@ impl RequestPanel {
         cx: &mut Context<Self>,
         placeholder: &'static str,
         language: &'static str,
-    ) -> Entity<InputState> {
+    ) -> Entity<EditorState> {
         cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor(language)
+            EditorState::new(window, cx)
+                .language(language)
+                .folding(true)
                 .placeholder(placeholder)
         })
     }
@@ -243,22 +245,42 @@ impl RequestPanel {
         })
     }
 
+    /// Same as [`Self::subscribe_sync_input`] for a code editor. `InputBaseState`
+    /// is generic over its mode but is not re-exported, so the two modes need
+    /// separate functions rather than one bound on the mode.
+    fn subscribe_sync_editor(
+        input: &Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(input, window, |this, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.sync_active_request(window, cx);
+            }
+        })
+    }
+
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Enter URL or paste text..."));
         let body_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
+            EditorState::new(window, cx)
+                .language("json")
+                .folding(true)
                 .soft_wrap(false)
                 .placeholder("Request body")
         });
         let auth_inputs = Self::make_auth_inputs(window, cx);
-        let auth_subs = auth_inputs
+        let mut auth_subs = auth_inputs
             .all()
             .into_iter()
             .map(|input| Self::subscribe_sync_input(&input, window, cx))
             .collect::<Vec<_>>();
+        auth_subs.push(Self::subscribe_sync_editor(
+            &auth_inputs.jwt_payload,
+            window,
+            cx,
+        ));
 
         let focus_handle = cx.focus_handle();
 
@@ -431,6 +453,15 @@ impl RequestPanel {
             if input.read(cx).focus_handle(cx).contains_focused(window, cx) {
                 return true;
             }
+        }
+        if self
+            .auth_inputs
+            .jwt_payload
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+        {
+            return true;
         }
         for row in &self.url_variable_rows {
             if row

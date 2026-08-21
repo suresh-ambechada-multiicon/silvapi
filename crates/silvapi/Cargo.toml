@@ -5,9 +5,15 @@ edition.workspace = true
 
 [dependencies]
 silvapi-core = { path = "../silvapi-core" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+# No `rev` here on purpose: gpui-component declares its zed dependencies without
+# one, and cargo treats a rev-pinned git source as *distinct* from an unpinned
+# one — which pulls in two copies of gpui and makes its types mutually
+# incompatible. The exact commit is pinned by Cargo.lock instead.
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", features = [
+    "tree-sitter",
+] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 anyhow = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -15,7 +21,7 @@ uuid = { workspace = true }
 futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 chrono = "0.4.45"
 rand = "0.10.1"
-rust-embed = "8.11.0"
+rust-embed = { version = "8.11.0", features = ["include-exclude"] }
 log = "0.4"
 
 # Native only. font-kit pulls freetype-sys, a C library with no wasm libc;
@@ -23,7 +29,7 @@ log = "0.4"
 # OS threads. On the web gpui_web supplies text shaping, storage is the browser's,
 # and the single-threaded executor is the event loop.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "font-kit",
     "wayland",
     "x11",
@@ -42,11 +48,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # gpui_web's default "multithreaded" feature, which pulls wasm_thread and needs
 # a nightly compiler (feature(stdarch_wasm_atomic_wait)). Cargo unifies features,
 # so the only way to keep it off is to not depend on gpui_platform here.
-# gpui_platform on the web too, matching upstream's hello_web example: it pulls
-# gpui_web with its default `multithreaded` feature, whose background dispatcher
-# runs work on web workers. That needs SharedArrayBuffer (hence COOP/COEP) and a
-# nightly compiler; scripts/serve-web.sh sets both up.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+# Same gpui_platform as native. gpui-component's own web gallery builds this way:
+# a plain wasm build with no atomics and no build-std. gpui_web still compiles its
+# multithreaded dispatcher, and falls back to single-threaded at runtime when
+# SharedArrayBuffer is unavailable.
+gpui_platform = { git = "https://github.com/zed-industries/zed" }
 # fetch-backed reqwest: no rustls, no streaming body, no native TLS.
 reqwest = { version = "0.11", features = ["json"], default-features = false }
 wasm-bindgen = "0.2"

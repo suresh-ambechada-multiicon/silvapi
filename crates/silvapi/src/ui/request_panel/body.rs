@@ -268,7 +268,7 @@ impl RequestPanel {
                         el.child(self.render_urlencoded_form(cx))
                     })
                     .when(Self::is_text_body_type(&body_type), |el| {
-                        el.child(Input::new(&self.body_editor).h_full().w_full())
+                        el.child(Editor::new(&self.body_editor).h_full().w_full())
                     })
                     .when(
                         !Self::is_text_body_type(&body_type)

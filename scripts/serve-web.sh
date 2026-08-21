@@ -18,36 +18,19 @@ if [[ "${1:-}" == "--debug" ]]; then
   profile_flag=""
 fi
 
-# The threaded wasm build needs a nightly toolchain: gpui_web's multithreaded
-# dispatcher uses wasm_thread, which requires feature(stdarch_wasm_atomic_wait),
-# and shared memory requires rebuilding std with atomics via -Z build-std.
-#
-# Deliberately set per-invocation rather than in .cargo/config.toml: `build-std`
-# there is not target-scoped and would force a std rebuild for native builds too.
-#
-# __heap_base is exported on top of upstream's list because wasm-bindgen needs it
-# to inject per-thread ids, and fails with "failed to find `__heap_base`" without it.
+# Nightly only, with no extra flags — the same recipe gpui-component uses for its
+# own web gallery (crates/story-web). No atomics, no shared memory, no build-std:
+# gpui_web compiles its multithreaded dispatcher but falls back to single-threaded
+# at runtime when SharedArrayBuffer is unavailable.
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-nightly}"
-export CARGO_UNSTABLE_BUILD_STD="std,panic_abort"
-export RUSTFLAGS="\
--C target-feature=+atomics,+bulk-memory,+mutable-globals \
--C link-arg=--shared-memory \
--C link-arg=--max-memory=1073741824 \
--C link-arg=--import-memory \
--C link-arg=--export=__wasm_init_tls \
--C link-arg=--export=__tls_size \
--C link-arg=--export=__tls_align \
--C link-arg=--export=__tls_base \
--C link-arg=--export=__heap_base"
 
 if ! rustup toolchain list 2>/dev/null | grep -q nightly; then
-  echo "error: a nightly toolchain is required for the threaded wasm build." >&2
-  echo "  rustup toolchain install nightly" >&2
-  echo "  rustup component add rust-src --toolchain nightly" >&2
+  echo "error: a nightly toolchain is required for the wasm build." >&2
+  echo "  rustup toolchain install nightly --target wasm32-unknown-unknown" >&2
   exit 1
 fi
 
-echo "==> building silvapi for wasm32-unknown-unknown (${profile}, threaded)"
+echo "==> building silvapi for wasm32-unknown-unknown (${profile})"
 cargo build --target wasm32-unknown-unknown -p silvapi ${profile_flag}
 
 wasm="target/wasm32-unknown-unknown/${profile}/silvapi.wasm"

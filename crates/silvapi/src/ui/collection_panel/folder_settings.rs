@@ -8,7 +8,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
     spinner::Spinner,
     v_flex,
@@ -47,9 +47,9 @@ impl CollectionPanel {
             aws_session_token: Self::new_auth_input(window, cx, "Session token"),
             jwt_secret: Self::new_auth_input(window, cx, "Secret or private key"),
             jwt_payload: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
-                    .code_editor("json")
+                EditorState::new(window, cx)
+                    .language("json")
+                    .folding(true)
                     .placeholder("Payload")
             }),
             oauth_client_id: Self::new_auth_input(window, cx, "Client ID"),
@@ -683,7 +683,7 @@ impl CollectionPanel {
             .gap_3()
             .child(label_text("Folder Name", cx))
             .child(Input::new(&self.folder_name_input).h(px(34.)))
-            .child(Input::new(&self.folder_description_input).flex_1().w_full())
+            .child(Textarea::new(&self.folder_description_input).flex_1().w_full())
             .into_any_element()
     }
 

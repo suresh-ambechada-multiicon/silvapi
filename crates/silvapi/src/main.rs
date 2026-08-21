@@ -1,6 +1,20 @@
 use gpui::*;
 use gpui_component::{Root, Theme, ThemeRegistry};
 
+#[cfg(target_family = "wasm")]
+thread_local! {
+    /// Keeps the application alive for the lifetime of the page.
+    ///
+    /// `Application::run` blocks forever on a desktop event loop, but on the web
+    /// it must return control to the browser, which drops the `Application` and
+    /// with it the last strong reference to the `App` — the window, its DOM
+    /// callbacks and everything else go too, and gpui then logs "app was
+    /// released". `run_embedded` hands back a handle holding that reference, so
+    /// parking it here is what keeps the app running.
+    static APPLICATION: std::cell::RefCell<Option<ApplicationHandle>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 mod http;
 mod runtime;
 mod state;
@@ -14,15 +28,37 @@ fn main() {
     run(gpui_platform::application().with_assets(gpui_component_assets::Assets));
 }
 
-/// Assets endpoint for the web build: icons are fetched at runtime, and the wasm
-/// build of reqwest cannot resolve a relative URL — it has no base to resolve
-/// against and fails with a bare "builder error". So hand it this document's
-/// absolute origin.
+/// Icons for the web build, embedded rather than fetched.
+///
+/// gpui-component's wasm asset source downloads each icon over `fetch` and, on a
+/// cache miss, returns an error so gpui retries next frame. Any icon that does
+/// not land in its cache therefore logs "Wasm assets loading, will be available
+/// soon..." on *every* frame, forever. Embedding is 396 KB for all 99 icons and
+/// removes the retry loop, the request storm and the log spam outright — an icon
+/// is either present in the binary or it is not.
 #[cfg(target_family = "wasm")]
-fn asset_origin() -> String {
-    web_sys::window()
-        .and_then(|window| window.location().origin().ok())
-        .unwrap_or_default()
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/**/*.svg"]
+struct WebAssets;
+
+#[cfg(target_family = "wasm")]
+impl AssetSource for WebAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        // `Ok(None)` rather than an error for a genuinely missing asset: gpui
+        // treats the error case as "retry", which is what causes the per-frame
+        // spam we are removing.
+        Ok(Self::get(path).map(|file| file.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|candidate| candidate.starts_with(path).then(|| candidate.into()))
+            .collect())
+    }
 }
 
 /// Web entry point, invoked from JavaScript once the wasm module is loaded.
@@ -36,15 +72,29 @@ pub fn start() {
     // makes before starting the app.
     gpui_platform::web_init();
 
-    run(gpui_platform::application()
-        .with_assets(gpui_component_assets::Assets::new(asset_origin())));
+    let app = gpui_platform::single_threaded_web().with_assets(WebAssets);
+
+    APPLICATION.with(|application| {
+        *application.borrow_mut() = Some(app.run_embedded(launch));
+    });
 }
 
 fn run(app: Application) {
-    app.run(move |cx| {
+    app.run(launch);
+}
+
+/// Everything that happens once the platform is ready, shared by both targets.
+fn launch(cx: &mut App) {
+    {
         gpui_component::init(cx);
         init_theme(cx);
 
+        // On the web the canvas is sized by the page, so asking for explicit
+        // bounds fights the viewport; upstream's web example passes defaults.
+        #[cfg(target_family = "wasm")]
+        let window_options = WindowOptions::default();
+
+        #[cfg(not(target_family = "wasm"))]
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
@@ -70,11 +120,29 @@ fn run(app: Application) {
         });
 
         match opened {
-            Ok(_) => cx.activate(true),
+            Ok(_) => {
+                cx.activate(true);
+                dismiss_loading_overlay();
+            }
             Err(error) => report_startup_failure(&format!("{error:#}")),
         }
-    });
+    }
 }
+
+/// Remove the page's loading element once the window is up, so the canvas is
+/// the only thing on screen. Driven from Rust rather than from the JS loader
+/// because this is the point at which the app is genuinely running.
+#[cfg(target_family = "wasm")]
+fn dismiss_loading_overlay() {
+    if let Some(document) = web_sys::window().and_then(|w| w.document())
+        && let Some(status) = document.get_element_by_id("status")
+    {
+        status.remove();
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn dismiss_loading_overlay() {}
 
 /// Surface a fatal startup error where the user will actually see it.
 fn report_startup_failure(message: &str) {
@@ -156,5 +224,15 @@ fn init_theme(cx: &mut App) {
 fn apply_theme(theme_name: &str, cx: &mut App) {
     if let Some(theme) = ThemeRegistry::global(cx).themes().get(theme_name).cloned() {
         Theme::global_mut(cx).apply_config(&theme);
+    }
+
+    // A theme names font families that exist on a desktop; in the browser the
+    // only faces available are the ones gpui_web bundles, so anything else
+    // resolves to nothing and text does not draw. Pin the theme to those.
+    #[cfg(target_family = "wasm")]
+    {
+        let theme = Theme::global_mut(cx);
+        theme.font_family = "IBM Plex Sans".into();
+        theme.mono_font_family = "Lilex".into();
     }
 }

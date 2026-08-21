@@ -7,7 +7,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement,
@@ -53,14 +53,13 @@ impl ResponsePanel {
         self.response_editor_plain = plain;
         let soft_wrap = self.soft_wrap && !plain;
         self.response_editor.update(cx, |state, cx| {
-            let mut next = InputState::new(window, cx)
-                .multi_line(true)
+            let mut next = EditorState::new(window, cx)
                 .searchable(true)
                 .replaceable(false)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
                 .soft_wrap(soft_wrap);
             if !plain {
-                next = next.code_editor("json");
+                next = next.language("json").folding(true);
             }
             *state = next;
         });

@@ -27,7 +27,8 @@ static PanelNode* create_leaf_node(ViewKind view) {
     node->views[0] = view;
     node->view_count = 1;
     node->active_view_index = 0;
-    node->collapse_anim = 1.0f;
+    node->collapse_spring = spring1d_make(1.0f, SPRING_CONFIG_SMOOTH);
+    node->tab_indicator_spring = spring_rect_make((Rect){0, 0, 0, 0}, SPRING_CONFIG_SNAPPY);
     return node;
 }
 
@@ -35,9 +36,10 @@ static PanelNode* create_split_node(NodeKind kind, float split_pct, PanelNode* c
     PanelNode* node = calloc(1, sizeof(PanelNode));
     node->kind = kind;
     node->split_pct = split_pct;
+    node->split_spring = spring1d_make(split_pct, SPRING_CONFIG_SNAPPY);
     node->child_a = child_a;
     node->child_b = child_b;
-    node->collapse_anim = 1.0f;
+    node->collapse_spring = spring1d_make(1.0f, SPRING_CONFIG_SMOOTH);
     if (child_a) child_a->parent = node;
     if (child_b) child_b->parent = node;
     return node;
@@ -59,7 +61,8 @@ void layout_reset_default(float window_w, float window_h) {
 
     g_layout.sidebar_collapsed = false;
     g_layout.sidebar_width = 240.0f;
-    g_layout.sidebar_anim_pct = 1.0f;
+    g_layout.sidebar_spring = spring1d_make(1.0f, SPRING_CONFIG_SMOOTH);
+    g_layout.dock_preview_spring = spring_rect_make((Rect){0, 0, 0, 0}, SPRING_CONFIG_BOUNCY);
 
     PanelNode* sidebar_leaf = create_leaf_node(VIEW_SIDEBAR);
     sidebar_leaf->min_size_a = 180.0f;
@@ -96,19 +99,27 @@ void layout_update_bounds(PanelNode* node, Rect rect, float dt) {
     if (!node) return;
     node->bounds = rect;
 
-    // Smooth animation for sidebar
-    float target_anim = g_layout.sidebar_collapsed ? 0.0f : 1.0f;
-    g_layout.sidebar_anim_pct += (target_anim - g_layout.sidebar_anim_pct) * fminf(20.0f * dt, 1.0f);
+    if (node == g_layout.root) {
+        // Smooth spring animation for sidebar
+        float target_anim = g_layout.sidebar_collapsed ? 0.0f : 1.0f;
+        spring1d_set_target(&g_layout.sidebar_spring, target_anim);
+        spring1d_update(&g_layout.sidebar_spring, dt);
+        spring_rect_update(&g_layout.dock_preview_spring, dt);
+    }
 
     if (node->kind == NODE_LEAF) {
         return;
     }
 
+    // Update split spring
+    spring1d_set_target(&node->split_spring, node->split_pct);
+    spring1d_update(&node->split_spring, dt);
+
     if (node->kind == NODE_SPLIT_H) {
-        float effective_split_pct = node->split_pct;
-        // If left child is sidebar, apply animated collapse
+        float effective_split_pct = node->split_spring.pos;
+        // If left child is sidebar, apply animated spring collapse
         if (node->child_a && node->child_a->kind == NODE_LEAF && node->child_a->views[0] == VIEW_SIDEBAR) {
-            float sb_w = g_layout.sidebar_width * g_layout.sidebar_anim_pct;
+            float sb_w = g_layout.sidebar_width * g_layout.sidebar_spring.pos;
             if (rect.w > 0) effective_split_pct = sb_w / rect.w;
         }
 
@@ -124,7 +135,7 @@ void layout_update_bounds(PanelNode* node, Rect rect, float dt) {
         layout_update_bounds(node->child_a, rect_a, dt);
         layout_update_bounds(node->child_b, rect_b, dt);
     } else if (node->kind == NODE_SPLIT_V) {
-        float split_y = rect.y + rect.h * node->split_pct;
+        float split_y = rect.y + rect.h * node->split_spring.pos;
         float splitter_h = 4.0f;
 
         Rect rect_a = rect_make(rect.x, rect.y, rect.w, split_y - rect.y);
@@ -288,22 +299,24 @@ static void render_leaf_content(PanelNode* leaf) {
         float qw = b.w * 0.25f;
         float qh = b.h * 0.25f;
 
+        Rect target_preview;
         if (rect_contains(box_left, mx, my) || mx < b.x + qw) {
             g_layout.hover_dock_zone = DOCK_LEFT;
-            g_layout.dock_preview_rect = rect_make(b.x, b.y, b.w * 0.5f, b.h);
+            target_preview = rect_make(b.x, b.y, b.w * 0.5f, b.h);
         } else if (rect_contains(box_right, mx, my) || mx > b.x + b.w - qw) {
             g_layout.hover_dock_zone = DOCK_RIGHT;
-            g_layout.dock_preview_rect = rect_make(b.x + b.w * 0.5f, b.y, b.w * 0.5f, b.h);
+            target_preview = rect_make(b.x + b.w * 0.5f, b.y, b.w * 0.5f, b.h);
         } else if (rect_contains(box_top, mx, my) || my < b.y + qh) {
             g_layout.hover_dock_zone = DOCK_TOP;
-            g_layout.dock_preview_rect = rect_make(b.x, b.y, b.w, b.h * 0.5f);
+            target_preview = rect_make(b.x, b.y, b.w, b.h * 0.5f);
         } else if (rect_contains(box_bottom, mx, my) || my > b.y + b.h - qh) {
             g_layout.hover_dock_zone = DOCK_BOTTOM;
-            g_layout.dock_preview_rect = rect_make(b.x, b.y + b.h * 0.5f, b.w, b.h * 0.5f);
+            target_preview = rect_make(b.x, b.y + b.h * 0.5f, b.w, b.h * 0.5f);
         } else {
             g_layout.hover_dock_zone = DOCK_CENTER_TAB;
-            g_layout.dock_preview_rect = b;
+            target_preview = b;
         }
+        spring_rect_set_target(&g_layout.dock_preview_spring, target_preview);
 
         // Draw 5 Compass Buttons
         r_draw_rect_rounded_bordered(box_center, 4.0f, 1.0f, (g_layout.hover_dock_zone == DOCK_CENTER_TAB) ? t->primary : t->border, (g_layout.hover_dock_zone == DOCK_CENTER_TAB) ? t->secondary_active : t->panel_bg);
@@ -332,9 +345,9 @@ static void handle_splitter(PanelNode* node) {
     float splitter_size = 4.0f;
 
     if (node->kind == NODE_SPLIT_H) {
-        float effective_pct = node->split_pct;
+        float effective_pct = node->split_spring.pos;
         if (node->child_a && node->child_a->kind == NODE_LEAF && node->child_a->views[0] == VIEW_SIDEBAR) {
-            effective_pct = (g_layout.sidebar_width * g_layout.sidebar_anim_pct) / (r.w > 0 ? r.w : 1.0f);
+            effective_pct = (g_layout.sidebar_width * g_layout.sidebar_spring.pos) / (r.w > 0 ? r.w : 1.0f);
         }
 
         float sx = r.x + r.w * effective_pct;
@@ -376,7 +389,7 @@ static void handle_splitter(PanelNode* node) {
             }
         }
     } else if (node->kind == NODE_SPLIT_V) {
-        float sy = r.y + r.h * node->split_pct;
+        float sy = r.y + r.h * node->split_spring.pos;
         handle_r = rect_make(r.x, sy - 2.0f, r.w, splitter_size + 4.0f);
 
         bool hov = rect_contains(handle_r, g_ui.mouse_x, g_ui.mouse_y);
@@ -438,8 +451,8 @@ void layout_render_and_handle(PanelNode* node) {
             g_layout.hover_target_node = NULL;
             g_layout.hover_dock_zone = DOCK_NONE;
         } else if (g_layout.hover_target_node && g_layout.hover_dock_zone != DOCK_NONE) {
-            // Draw RAD Debugger style translucent drop preview
-            r_draw_rect_rounded_bordered(g_layout.dock_preview_rect, 6.0f, 2.0f, t->primary, color_with_alpha(t->primary, 0.25f));
+            // Draw RAD Debugger style spring-morphing translucent drop preview
+            r_draw_rect_rounded_bordered(g_layout.dock_preview_spring.pos, 6.0f, 2.0f, t->primary, color_with_alpha(t->primary, 0.25f));
         }
     }
 }

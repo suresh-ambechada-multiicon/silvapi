@@ -50,6 +50,22 @@ void view_request_panel(Rect rect) {
         cur_tab_x += tw;
     }
 
+    // Plus (+) button for new tab
+    Rect plus_tab_r = rect_make(cur_tab_x + 4.0f, rect.y + (tab_h - 22.0f) * 0.5f, 24.0f, 22.0f);
+    if (ui_button_icon(ICON_PLUS, NULL, plus_tab_r, false)) {
+        ApiRequest* new_req = api_request_create("New Request", METHOD_GET, "https://jsonplaceholder.typicode.com/posts/1");
+        if (g_app.workspace && g_app.workspace->collections_count > 0) {
+            Collection* col = g_app.workspace->collections[0];
+            CollectionItem* ci = calloc(1, sizeof(CollectionItem));
+            ci->type = ITEM_REQUEST;
+            ci->request = new_req;
+            col->items = realloc(col->items, sizeof(CollectionItem*) * (col->items_count + 1));
+            col->items[col->items_count++] = ci;
+            storage_save_workspace(g_app.workspace);
+        }
+        app_open_request(new_req);
+    }
+
     if (g_app.tab_count == 0 || g_app.active_tab_index < 0 || g_app.active_tab_index >= (int)g_app.tab_count) {
         // No active tab
         font_draw_text(g_ui.font_ui, "Select or create a request from the sidebar", 0, rect.x + 30.0f, rect.y + 80.0f, t->text_muted);
@@ -62,10 +78,24 @@ void view_request_panel(Rect rect) {
     // 2. URL Bar & Method Dropdown & Send Button
     float url_bar_y = rect.y + tab_h + 10.0f;
     float url_bar_h = 32.0f;
+    Rect url_bar_rect = rect_make(rect.x + 10.0f, url_bar_y, rect.w - 20.0f, url_bar_h);
+    UILayout url_row = ui_layout_row(url_bar_rect, 6.0f, 0.0f, 0.0f);
 
-    // Method Dropdown
-    float method_w = 95.0f;
-    Rect method_rect = rect_make(rect.x + 10.0f, url_bar_y, method_w, url_bar_h);
+    // Send / Cancel Button (anchored to right)
+    Rect send_rect = ui_layout_item_right(&url_row, 85.0f, url_bar_h);
+
+    if (g_app.is_sending) {
+        if (ui_button_danger_icon(ICON_STOP, "Cancel", send_rect)) {
+            app_cancel_active_request();
+        }
+    } else {
+        if (ui_button_primary_icon(ICON_SEND, "Send", send_rect)) {
+            app_send_active_request();
+        }
+    }
+
+    // Method Dropdown (fixed on left)
+    Rect method_rect = ui_layout_item_fixed(&url_row, 95.0f, url_bar_h);
     int cur_method = (int)req->method;
     if (ui_dropdown("req_method_sel", s_method_options, 7, &cur_method, method_rect)) {
         req->method = (HttpMethod)cur_method;
@@ -73,30 +103,14 @@ void view_request_panel(Rect rect) {
         storage_save_workspace(g_app.workspace);
     }
 
-    // Send / Cancel Button
-    float send_w = 75.0f;
-    Rect send_rect = rect_make(rect.x + rect.w - send_w - 10.0f, url_bar_y, send_w, url_bar_h);
+    // URL Text Input with Lock / Globe Icon (fills entire remaining flex width)
+    Rect url_rect = ui_layout_item_flex(&url_row, 1.0f, 80.0f, url_bar_h);
 
-    if (g_app.is_sending) {
-        if (ui_button_danger("Cancel", send_rect)) {
-            app_cancel_active_request();
-        }
-    } else {
-        if (ui_button("Send", send_rect, true)) {
-            app_send_active_request();
-        }
-    }
-
-    // URL Text Input
-    float url_x = method_rect.x + method_rect.w + 6.0f;
-    float url_w = send_rect.x - url_x - 6.0f;
-    Rect url_rect = rect_make(url_x, url_bar_y, url_w, url_bar_h);
-
-    if (ui_input_text("req_url_input", req->url, sizeof(req->url), "https://api.example.com/endpoint", url_rect)) {
+    if (ui_input_text_icon("req_url_input", ICON_LOCK, req->url, sizeof(req->url), "https://api.example.com/endpoint", url_rect)) {
         storage_save_workspace(g_app.workspace);
     }
 
-    // 3. Request Sub-tabs (Body, Params, Headers, Auth, Info)
+    // 3. Request Sub-tabs (Body, Params, Headers, Auth, Info) with Lucide Icons
     float subtab_y = url_bar_y + url_bar_h + 10.0f;
     float subtab_h = 28.0f;
 
@@ -113,8 +127,16 @@ void view_request_panel(Rect rect) {
         "Info"
     };
 
+    const IconType subtab_icons[] = {
+        ICON_FILE_CODE,
+        ICON_TABLE,
+        ICON_LAYERS,
+        ICON_SHIELD,
+        ICON_INFO
+    };
+
     Rect subtab_bar = rect_make(rect.x + 10.0f, subtab_y, rect.w - 20.0f, subtab_h);
-    g_app.request_subtab = ui_tab_bar("req_subtabs", subtabs, 5, g_app.request_subtab, subtab_bar);
+    g_app.request_subtab = ui_tab_bar_icons("req_subtabs", subtab_icons, subtabs, 5, g_app.request_subtab, subtab_bar);
 
     // 4. Sub-tab Content Area
     float content_y = subtab_y + subtab_h + 8.0f;
@@ -123,22 +145,25 @@ void view_request_panel(Rect rect) {
 
     switch (g_app.request_subtab) {
         case 0: { // Body Tab
-            // Body Type Selector (Radio/Dropdown buttons)
-            float bth_y = content_rect.y;
-            float cur_bx = content_rect.x;
+            // Body Type Selector (Radio/Dropdown buttons) with clipping & layout
+            Rect bth_rect = rect_make(content_rect.x, content_rect.y, content_rect.w, 24.0f);
+            UILayout bth_row = ui_layout_row(bth_rect, 4.0f, 0.0f, 0.0f);
+            r_push_clip(bth_rect);
+
             for (int b = 0; b < 6; b++) {
                 float bw = font_measure_text(g_ui.font_ui, s_body_type_options[b], 0) + 16.0f;
-                Rect br = rect_make(cur_bx, bth_y, bw, 24.0f);
+                if (!ui_layout_can_fit(&bth_row, bw) && b > 0) break;
+                Rect br = ui_layout_item_fixed(&bth_row, bw, 24.0f);
                 bool is_active_type = ((int)req->body.body_type == b);
                 if (ui_button_icon(ICON_NONE, s_body_type_options[b], br, is_active_type)) {
                     req->body.body_type = (BodyType)b;
                     storage_save_workspace(g_app.workspace);
                 }
-                cur_bx += bw + 6.0f;
             }
+            r_pop_clip();
 
             // Body Editor
-            Rect editor_rect = rect_make(content_rect.x, bth_y + 30.0f, content_rect.w, content_rect.h - 30.0f);
+            Rect editor_rect = rect_make(content_rect.x, content_rect.y + 30.0f, content_rect.w, content_rect.h - 30.0f);
             if (req->body.body_type == BODY_NO_BODY) {
                 font_draw_text(g_ui.font_ui, "This request does not have a body", 0, editor_rect.x + 8.0f, editor_rect.y + 20.0f, t->text_muted);
             } else if (req->body.body_type == BODY_JSON || req->body.body_type == BODY_RAW) {
@@ -168,8 +193,9 @@ void view_request_panel(Rect rect) {
             break;
         }
         case 3: { // Auth Tab
+            float fh_ui = font_get_height(g_ui.font_ui);
             float cur_ay = content_rect.y;
-            font_draw_text(g_ui.font_ui, "Type:", 0, content_rect.x, cur_ay + 6.0f, t->text_muted);
+            font_draw_text(g_ui.font_ui, "Type:", 0, content_rect.x, cur_ay + (26.0f - fh_ui) * 0.5f, t->text_muted);
             
             Rect auth_sel = rect_make(content_rect.x + 50.0f, cur_ay, 140.0f, 26.0f);
             int cur_auth = (int)req->auth.type;
@@ -182,32 +208,33 @@ void view_request_panel(Rect rect) {
             if (req->auth.type == AUTH_NONE) {
                 font_draw_text(g_ui.font_ui, "This request does not use any authorization", 0, content_rect.x, cur_ay + 10.0f, t->text_muted);
             } else if (req->auth.type == AUTH_BEARER) {
-                font_draw_text(g_ui.font_ui, "Token:", 0, content_rect.x, cur_ay + 6.0f, t->foreground);
+                font_draw_text(g_ui.font_ui, "Token:", 0, content_rect.x, cur_ay + (28.0f - fh_ui) * 0.5f, t->foreground);
                 Rect tr = rect_make(content_rect.x + 60.0f, cur_ay, content_rect.w - 60.0f, 28.0f);
                 if (ui_input_text("auth_bearer_tok", req->auth.bearer_token, sizeof(req->auth.bearer_token), "{{token}}", tr)) {
                     storage_save_workspace(g_app.workspace);
                 }
             } else if (req->auth.type == AUTH_BASIC) {
-                font_draw_text(g_ui.font_ui, "Username:", 0, content_rect.x, cur_ay + 6.0f, t->foreground);
+                font_draw_text(g_ui.font_ui, "Username:", 0, content_rect.x, cur_ay + (28.0f - fh_ui) * 0.5f, t->foreground);
                 Rect ur = rect_make(content_rect.x + 80.0f, cur_ay, content_rect.w - 80.0f, 28.0f);
                 ui_input_text("auth_basic_user", req->auth.basic_username, sizeof(req->auth.basic_username), "Username", ur);
                 cur_ay += 34.0f;
-                font_draw_text(g_ui.font_ui, "Password:", 0, content_rect.x, cur_ay + 6.0f, t->foreground);
+                font_draw_text(g_ui.font_ui, "Password:", 0, content_rect.x, cur_ay + (28.0f - fh_ui) * 0.5f, t->foreground);
                 Rect pr = rect_make(content_rect.x + 80.0f, cur_ay, content_rect.w - 80.0f, 28.0f);
                 ui_input_text("auth_basic_pass", req->auth.basic_password, sizeof(req->auth.basic_password), "Password", pr);
             } else if (req->auth.type == AUTH_API_KEY) {
-                font_draw_text(g_ui.font_ui, "Key:", 0, content_rect.x, cur_ay + 6.0f, t->foreground);
+                font_draw_text(g_ui.font_ui, "Key:", 0, content_rect.x, cur_ay + (28.0f - fh_ui) * 0.5f, t->foreground);
                 Rect kr = rect_make(content_rect.x + 50.0f, cur_ay, (content_rect.w - 60.0f) * 0.4f, 28.0f);
                 ui_input_text("auth_api_k", req->auth.api_key_name, sizeof(req->auth.api_key_name), "X-API-Key", kr);
                 
-                font_draw_text(g_ui.font_ui, "Value:", 0, kr.x + kr.w + 10.0f, cur_ay + 6.0f, t->foreground);
+                font_draw_text(g_ui.font_ui, "Value:", 0, kr.x + kr.w + 10.0f, cur_ay + (28.0f - fh_ui) * 0.5f, t->foreground);
                 Rect vr = rect_make(kr.x + kr.w + 60.0f, cur_ay, content_rect.w - (kr.x + kr.w + 60.0f - content_rect.x), 28.0f);
                 ui_input_text("auth_api_v", req->auth.api_key_value, sizeof(req->auth.api_key_value), "Value", vr);
             }
             break;
         }
         case 4: { // Info Tab
-            font_draw_text(g_ui.font_ui, "Name:", 0, content_rect.x, content_rect.y + 6.0f, t->foreground);
+            float fh_ui = font_get_height(g_ui.font_ui);
+            font_draw_text(g_ui.font_ui, "Name:", 0, content_rect.x, content_rect.y + (28.0f - fh_ui) * 0.5f, t->foreground);
             Rect nr = rect_make(content_rect.x + 50.0f, content_rect.y, content_rect.w - 50.0f, 28.0f);
             if (ui_input_text("req_name_input", req->name, sizeof(req->name), "Request Name", nr)) {
                 strncpy(g_app.tabs[g_app.active_tab_index].title, req->name, sizeof(g_app.tabs[g_app.active_tab_index].title) - 1);

@@ -19,6 +19,8 @@ link_directories(
 
 set(SOURCES
     vendor/cJSON.c
+    src/arena.c
+    src/spring.c
     src/fredbuf.c
     src/panel_layout.c
     src/theme.c

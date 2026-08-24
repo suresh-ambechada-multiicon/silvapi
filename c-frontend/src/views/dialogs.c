@@ -10,14 +10,16 @@ void view_dialogs(void) {
     // 1. Toast Notification Overlay
     if (g_app.toast_timer > 0.0f) {
         g_app.toast_timer -= g_ui.dt;
-        float tw = font_measure_text(g_ui.font_ui, g_app.toast_message, 0) + 24.0f;
-        float th = 32.0f;
+        float tw = font_measure_text(g_ui.font_ui, g_app.toast_message, 0) + 42.0f;
+        float th = 34.0f;
         float tx = ((float)g_ui.window_width - tw) * 0.5f;
         float ty = (float)g_ui.window_height - 60.0f;
 
         Rect tr = rect_make(tx, ty, tw, th);
         r_draw_rect_rounded_bordered(tr, 6.0f, 1.0f, t->primary, t->panel_bg);
-        font_draw_text(g_ui.font_ui, g_app.toast_message, 0, tx + 12.0f, ty + 8.0f, t->foreground);
+        r_draw_icon(ICON_CHECK_CIRCLE, rect_make(tx + 10.0f, ty + 9.0f, 16.0f, 16.0f), t->primary);
+        float fh_ui = font_get_height(g_ui.font_ui);
+        font_draw_text(g_ui.font_ui, g_app.toast_message, 0, tx + 32.0f, ty + (th - fh_ui) * 0.5f, t->foreground);
     }
 
     // 2. Variables Modal
@@ -105,7 +107,7 @@ void view_dialogs(void) {
         if (ui_modal_begin("Quick Open (Ctrl+P)", pw, ph, &body_rect)) {
             // Search Input
             Rect search_r = rect_make(body_rect.x, body_rect.y, body_rect.w, 32.0f);
-            ui_input_text("cmd_palette_input", g_app.command_palette_query, sizeof(g_app.command_palette_query), "Search requests by name or URL...", search_r);
+            ui_input_text_icon("cmd_palette_input", ICON_SEARCH, g_app.command_palette_query, sizeof(g_app.command_palette_query), "Search requests by name or URL...", search_r);
 
             // List Results
             float list_y = body_rect.y + 40.0f;
@@ -145,14 +147,18 @@ void view_dialogs(void) {
                             // Method Badge
                             const char* mstr = http_method_to_string(req->method);
                             Color mcol = theme_get_method_color(mstr);
+                            float fh_bold = font_get_height(g_ui.font_bold);
+                            float fh_ui = font_get_height(g_ui.font_ui);
                             float mw = font_measure_text(g_ui.font_bold, mstr, 0) + 12.0f;
-                            r_draw_rect_rounded(rect_make(ir.x + 8.0f, ir.y + 5.0f, mw, 22.0f), 3.0f, color_with_alpha(mcol, 0.15f));
-                            font_draw_text(g_ui.font_bold, mstr, 0, ir.x + 14.0f, ir.y + 8.0f, mcol);
+                            float badge_h = 22.0f;
+                            Rect badge_rect = rect_make(ir.x + 8.0f, ir.y + (item_h - badge_h) * 0.5f, mw, badge_h);
+                            r_draw_rect_rounded(badge_rect, 3.0f, color_with_alpha(mcol, 0.15f));
+                            font_draw_text(g_ui.font_bold, mstr, 0, badge_rect.x + 6.0f, badge_rect.y + (badge_h - fh_bold) * 0.5f, mcol);
 
                             // Breadcrumb
                             char breadcrumb[512];
                             snprintf(breadcrumb, sizeof(breadcrumb), "%s  /  %s", col->name, req->name);
-                            font_draw_text(g_ui.font_ui, breadcrumb, 0, ir.x + mw + 20.0f, ir.y + 8.0f, t->foreground);
+                            font_draw_text(g_ui.font_ui, breadcrumb, 0, ir.x + mw + 16.0f, ir.y + (item_h - fh_ui) * 0.5f, t->foreground);
 
                             list_y += item_h + 2.0f;
                             match_idx++;
@@ -185,8 +191,10 @@ void view_dialogs(void) {
             }
 
             float by_bottom = body_rect.y + body_rect.h - 40.0f;
-            font_draw_text(g_ui.font_bold, "Detected:", 0, body_rect.x, by_bottom + 8.0f, t->primary);
-            font_draw_text(g_ui.font_ui, detected_format, 0, body_rect.x + 80.0f, by_bottom + 8.0f, t->foreground);
+            float fh_bold = font_get_height(g_ui.font_bold);
+            float fh_ui = font_get_height(g_ui.font_ui);
+            font_draw_text(g_ui.font_bold, "Detected:", 0, body_rect.x, by_bottom + (30.0f - fh_bold) * 0.5f, t->primary);
+            font_draw_text(g_ui.font_ui, detected_format, 0, body_rect.x + 80.0f, by_bottom + (30.0f - fh_ui) * 0.5f, t->foreground);
 
             // Import Button
             Rect imp_btn = rect_make(body_rect.x + body_rect.w - 100.0f, by_bottom, 100.0f, 30.0f);

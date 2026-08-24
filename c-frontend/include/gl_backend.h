@@ -10,28 +10,52 @@ typedef enum {
     ICON_CLOSE,
     ICON_PLAY,
     ICON_STOP,
+    ICON_SEND,
     ICON_CHEVRON_RIGHT,
     ICON_CHEVRON_DOWN,
+    ICON_CHEVRON_LEFT,
+    ICON_CHEVRON_UP,
     ICON_FOLDER,
     ICON_FOLDER_OPEN,
     ICON_FILE,
+    ICON_FILE_CODE,
     ICON_TRASH,
     ICON_COPY,
     ICON_CHECK,
     ICON_SETTINGS,
     ICON_VARIABLE,
     ICON_IMPORT,
+    ICON_EXPORT,
     ICON_DOT,
     ICON_REFRESH,
+    ICON_HISTORY,
     ICON_EXPAND,
     ICON_COLLAPSE,
     ICON_MORE,
+    ICON_GLOBE,
+    ICON_CLOCK,
+    ICON_LOCK,
+    ICON_KEY,
+    ICON_DATABASE,
+    ICON_TABLE,
+    ICON_FILTER,
+    ICON_EYE,
+    ICON_EYE_OFF,
+    ICON_TERMINAL,
+    ICON_LAYERS,
+    ICON_SPARKLES,
+    ICON_BOLT,
+    ICON_SHIELD,
+    ICON_CODE,
+    ICON_INFO,
+    ICON_CHECK_CIRCLE,
+    ICON_ALERT_TRIANGLE,
     ICON_COUNT
 } IconType;
 
-bool gl_backend_init(int window_width, int window_height);
+bool gl_backend_init(int logical_w, int logical_h, int fb_w, int fb_h);
 void gl_backend_shutdown(void);
-void gl_backend_resize(int width, int height);
+void gl_backend_resize(int logical_w, int logical_h, int fb_w, int fb_h);
 void gl_backend_begin_frame(void);
 void gl_backend_end_frame(void);
 

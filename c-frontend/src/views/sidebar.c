@@ -73,21 +73,29 @@ void view_sidebar(Rect rect) {
 
     // 1. Search Bar
     Rect search_rect = rect_make(rect.x + 8.0f, rect.y + 8.0f, rect.w - 16.0f, 28.0f);
-    ui_input_text("sidebar_search", g_app.sidebar_search, sizeof(g_app.sidebar_search), "Search...", search_rect);
+    ui_input_text_icon("sidebar_search", ICON_SEARCH, g_app.sidebar_search, sizeof(g_app.sidebar_search), "Search requests...", search_rect);
 
     // 2. Collections Tree
     float tree_y = rect.y + 44.0f;
     float tree_h = rect.h - 44.0f;
     Rect tree_rect = rect_make(rect.x, tree_y, rect.w, tree_h);
 
-    r_push_clip(tree_rect);
-
-    float cur_y = tree_y + 4.0f - g_app.sidebar_scroll_y;
-
-    if (rect_contains(tree_rect, g_ui.mouse_x, g_ui.mouse_y)) {
-        g_app.sidebar_scroll_y -= g_ui.scroll_y * 24.0f;
-        if (g_app.sidebar_scroll_y < 0.0f) g_app.sidebar_scroll_y = 0.0f;
+    float content_h = 16.0f;
+    if (g_app.workspace) {
+        for (size_t c = 0; c < g_app.workspace->collections_count; c++) {
+            content_h += 30.0f;
+            Collection* col = g_app.workspace->collections[c];
+            if (col && col->is_expanded && col->items) {
+                content_h += col->items_count * 26.0f;
+            }
+        }
     }
+
+    uint64_t sb_id = ui_hash_id("sidebar_tree", 0);
+    float current_scroll = ui_smooth_scroll(sb_id, tree_rect, content_h, &g_app.sidebar_scroll_y);
+
+    r_push_clip(tree_rect);
+    float cur_y = tree_y + 4.0f - current_scroll;
 
     if (g_app.workspace) {
         for (size_t c = 0; c < g_app.workspace->collections_count; c++) {
@@ -104,11 +112,12 @@ void view_sidebar(Rect rect) {
             // Collection Title + Chevron
             Rect ch_rect = rect_make(cr.x, cr.y + (cr.h - 12.0f) * 0.5f, 12.0f, 12.0f);
             r_draw_icon(col->is_expanded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, ch_rect, t->text_muted);
-            font_draw_text(g_ui.font_bold, col->name, 0, cr.x + 16.0f, cr.y + 5.0f, t->foreground);
+            float title_h = font_get_height(g_ui.font_bold);
+            font_draw_text(g_ui.font_bold, col->name, 0, cr.x + 16.0f, cr.y + (cr.h - title_h) * 0.5f, t->foreground);
 
             // Add Request (+) button on collection header
-            Rect add_btn = rect_make(cr.x + cr.w - 20.0f, cr.y + 3.0f, 18.0f, 18.0f);
-            if (ui_button_ghost("+", add_btn)) {
+            Rect add_btn = rect_make(cr.x + cr.w - 20.0f, cr.y + (cr.h - 18.0f) * 0.5f, 18.0f, 18.0f);
+            if (ui_button_icon(ICON_PLUS, NULL, add_btn, false)) {
                 ApiRequest* new_req = api_request_create("New Request", METHOD_GET, "https://jsonplaceholder.typicode.com/posts/1");
                 CollectionItem* ci = calloc(1, sizeof(CollectionItem));
                 ci->type = ITEM_REQUEST;
@@ -131,4 +140,5 @@ void view_sidebar(Rect rect) {
     }
 
     r_pop_clip();
+    ui_draw_scrollbar(sb_id, tree_rect, content_h);
 }

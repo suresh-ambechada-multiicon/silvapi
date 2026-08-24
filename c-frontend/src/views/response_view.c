@@ -34,51 +34,19 @@ void view_response_panel(Rect rect) {
     r_draw_rect(sb_rect, t->tabbar_bg);
     r_draw_line((Vec2){rect.x, rect.y + status_bar_h}, (Vec2){rect.x + rect.w, rect.y + status_bar_h}, 1.0f, t->border);
 
-    float cur_x = rect.x + 12.0f;
-    float by = rect.y + (status_bar_h - 22.0f) * 0.5f;
+    float fh_ui = font_get_height(g_ui.font_ui);
+    float fh_bold = font_get_height(g_ui.font_bold);
+
+    UILayout row = ui_layout_row(sb_rect, 8.0f, 10.0f, 8.0f);
 
     if (g_app.is_sending) {
-        font_draw_text(g_ui.font_bold, "Sending request...", 0, cur_x, by + 4.0f, t->primary);
+        float isz = 14.0f;
+        Rect ir = ui_layout_item_fixed(&row, isz, isz);
+        r_draw_icon(ICON_REFRESH, ir, t->primary);
+        font_draw_text(g_ui.font_bold, "Sending request...", 0, row.cur_x + 4.0f, rect.y + (status_bar_h - fh_bold) * 0.5f, t->primary);
     } else if (has_response) {
-        if (resp->status_code > 0) {
-            // Status Badge (e.g. "200 OK")
-            char sbuf[64];
-            snprintf(sbuf, sizeof(sbuf), "%d %.40s", resp->status_code, resp->status_text);
-            Color scol = theme_get_status_color(resp->status_code);
-            float sw = font_measure_text(g_ui.font_bold, sbuf, 0) + 16.0f;
-            Rect s_badge = rect_make(cur_x, by, sw, 22.0f);
-            r_draw_rect_rounded(s_badge, 4.0f, color_with_alpha(scol, 0.2f));
-            font_draw_text(g_ui.font_bold, sbuf, 0, s_badge.x + 8.0f, s_badge.y + 4.0f, scol);
-            cur_x += sw + 10.0f;
-
-            // Latency Badge
-            char lbuf[32];
-            format_duration(resp->latency_ms, lbuf, sizeof(lbuf));
-            float lw = font_measure_text(g_ui.font_ui, lbuf, 0) + 16.0f;
-            Rect l_badge = rect_make(cur_x, by, lw, 22.0f);
-            r_draw_rect_rounded(l_badge, 4.0f, t->secondary);
-            font_draw_text(g_ui.font_ui, lbuf, 0, l_badge.x + 8.0f, l_badge.y + 4.0f, t->foreground);
-            cur_x += lw + 8.0f;
-
-            // Size Badge
-            char szbuf[32];
-            format_size(resp->body_size, szbuf, sizeof(szbuf));
-            float szw = font_measure_text(g_ui.font_ui, szbuf, 0) + 16.0f;
-            Rect sz_badge = rect_make(cur_x, by, szw, 22.0f);
-            r_draw_rect_rounded(sz_badge, 4.0f, t->secondary);
-            font_draw_text(g_ui.font_ui, szbuf, 0, sz_badge.x + 8.0f, sz_badge.y + 4.0f, t->foreground);
-            cur_x += szw + 8.0f;
-        } else if (resp->error) {
-            font_draw_text(g_ui.font_bold, resp->error, 0, cur_x, by + 4.0f, t->danger);
-        }
-
-        // Action Buttons on Right: History, Copy
-        float right_x = rect.x + rect.w - 12.0f;
-
-        // Copy Button
-        float copy_w = 65.0f;
-        right_x -= copy_w;
-        Rect copy_btn = rect_make(right_x, by, copy_w, 22.0f);
+        // Reserve Action Buttons on Right first: Copy, Find, History
+        Rect copy_btn = ui_layout_item_right(&row, 72.0f, 24.0f);
         if (ui_button_icon(ICON_COPY, "Copy", copy_btn, false)) {
             if (resp->body && *resp->body) {
                 glfwSetClipboardString(NULL, resp->body);
@@ -86,21 +54,71 @@ void view_response_panel(Rect rect) {
             }
         }
 
-        // History Button
-        float hist_w = 75.0f;
-        right_x -= (hist_w + 6.0f);
-        Rect hist_btn = rect_make(right_x, by, hist_w, 22.0f);
-        if (ui_button_icon(ICON_REFRESH, "History", hist_btn, g_app.show_history_dropdown)) {
-            g_app.show_history_dropdown = !g_app.show_history_dropdown;
-            if (g_app.show_history_dropdown && g_app.tab_count > 0 && g_app.active_tab_index >= 0) {
-                // Refresh history list
-                if (g_app.history_entries) storage_free_history_entries(g_app.history_entries, g_app.history_count);
-                g_app.history_entries = storage_load_response_history(g_app.open_requests[g_app.active_tab_index]->id, &g_app.history_count);
+        // Find button (triggers fast search in response buffer)
+        if (g_app.response_subtab == 0 && resp->body && *resp->body) {
+            Rect find_btn = ui_layout_item_right(&row, 68.0f, 24.0f);
+            if (ui_button_icon(ICON_SEARCH, "Find", find_btn, false)) {
+                ui_code_editor_open_search("resp_code_viewer");
             }
         }
 
+        Rect hist_btn = (Rect){0};
+        if (ui_layout_remaining_space(&row) > 80.0f) {
+            hist_btn = ui_layout_item_right(&row, 82.0f, 24.0f);
+            if (ui_button_icon(ICON_HISTORY, "History", hist_btn, g_app.show_history_dropdown)) {
+                g_app.show_history_dropdown = !g_app.show_history_dropdown;
+                if (g_app.show_history_dropdown && g_app.tab_count > 0 && g_app.active_tab_index >= 0) {
+                    if (g_app.history_entries) storage_free_history_entries(g_app.history_entries, g_app.history_count);
+                    g_app.history_entries = storage_load_response_history(g_app.open_requests[g_app.active_tab_index]->id, &g_app.history_count);
+                }
+            }
+        }
+
+        if (resp->status_code > 0) {
+            // Status Badge (e.g. "200 OK")
+            char sbuf[64];
+            snprintf(sbuf, sizeof(sbuf), "%d %.40s", resp->status_code, resp->status_text);
+            Color scol = theme_get_status_color(resp->status_code);
+            IconType sicon = (resp->status_code >= 200 && resp->status_code < 400) ? ICON_CHECK_CIRCLE : ICON_ALERT_TRIANGLE;
+            float sw = font_measure_text(g_ui.font_bold, sbuf, 0) + 36.0f;
+            
+            if (ui_layout_remaining_space(&row) > 50.0f) {
+                Rect s_badge = ui_layout_item_fixed(&row, sw, 24.0f);
+                r_draw_rect_rounded(s_badge, 4.0f, color_with_alpha(scol, 0.2f));
+                r_draw_icon(sicon, rect_make(s_badge.x + 8.0f, s_badge.y + 5.0f, 14.0f, 14.0f), scol);
+                font_draw_text(g_ui.font_bold, sbuf, 0, s_badge.x + 26.0f, s_badge.y + (s_badge.h - fh_bold) * 0.5f, scol);
+            }
+
+            // Latency Badge
+            char lbuf[32];
+            format_duration(resp->latency_ms, lbuf, sizeof(lbuf));
+            float lw = font_measure_text(g_ui.font_ui, lbuf, 0) + 32.0f;
+            if (ui_layout_can_fit(&row, lw)) {
+                Rect l_badge = ui_layout_item_fixed(&row, lw, 24.0f);
+                r_draw_rect_rounded(l_badge, 4.0f, t->secondary);
+                r_draw_icon(ICON_CLOCK, rect_make(l_badge.x + 7.0f, l_badge.y + 5.0f, 14.0f, 14.0f), t->text_muted);
+                font_draw_text(g_ui.font_ui, lbuf, 0, l_badge.x + 24.0f, l_badge.y + (l_badge.h - fh_ui) * 0.5f, t->foreground);
+            }
+
+            // Size Badge
+            char szbuf[32];
+            format_size(resp->body_size, szbuf, sizeof(szbuf));
+            float szw = font_measure_text(g_ui.font_ui, szbuf, 0) + 32.0f;
+            if (ui_layout_can_fit(&row, szw)) {
+                Rect sz_badge = ui_layout_item_fixed(&row, szw, 24.0f);
+                r_draw_rect_rounded(sz_badge, 4.0f, t->secondary);
+                r_draw_icon(ICON_DATABASE, rect_make(sz_badge.x + 7.0f, sz_badge.y + 5.0f, 14.0f, 14.0f), t->text_muted);
+                font_draw_text(g_ui.font_ui, szbuf, 0, sz_badge.x + 24.0f, sz_badge.y + (sz_badge.h - fh_ui) * 0.5f, t->foreground);
+            }
+        } else if (resp->error) {
+            float ew = font_measure_text(g_ui.font_bold, resp->error, 0) + 30.0f;
+            Rect er = ui_layout_item_fixed(&row, ew, 24.0f);
+            r_draw_icon(ICON_ALERT_TRIANGLE, rect_make(er.x, er.y + 4.0f, 16.0f, 16.0f), t->danger);
+            font_draw_text(g_ui.font_bold, resp->error, 0, er.x + 22.0f, er.y + (er.h - fh_bold) * 0.5f, t->danger);
+        }
+
         // Response History Dropdown Popup
-        if (g_app.show_history_dropdown) {
+        if (g_app.show_history_dropdown && hist_btn.w > 0.0f) {
             float hw = 300.0f;
             float hh = 200.0f;
             Rect hr = rect_make(hist_btn.x + hist_btn.w - hw, hist_btn.y + hist_btn.h + 4.0f, hw, hh);
@@ -152,10 +170,10 @@ void view_response_panel(Rect rect) {
             }
         }
     } else {
-        font_draw_text(g_ui.font_ui, "Enter a URL and click Send to see the response", 0, cur_x, by + 4.0f, t->text_muted);
+        font_draw_text(g_ui.font_ui, "Enter a URL and click Send to see the response", 0, row.cur_x, rect.y + (status_bar_h - fh_ui) * 0.5f, t->text_muted);
     }
 
-    // 2. Response Sub-tabs: Response, Table, Headers, Timeline
+    // 2. Response Sub-tabs: Response, Table, Headers, Timeline with Modern Icons
     float subtab_y = rect.y + status_bar_h;
     float subtab_h = 28.0f;
 
@@ -166,8 +184,15 @@ void view_response_panel(Rect rect) {
         "Timeline"
     };
 
+    const IconType subtab_icons[] = {
+        ICON_CODE,
+        ICON_TABLE,
+        ICON_LAYERS,
+        ICON_HISTORY
+    };
+
     Rect subtab_bar = rect_make(rect.x + 8.0f, subtab_y, rect.w - 16.0f, subtab_h);
-    g_app.response_subtab = ui_tab_bar("resp_subtabs", subtabs, 4, g_app.response_subtab, subtab_bar);
+    g_app.response_subtab = ui_tab_bar_icons("resp_subtabs", subtab_icons, subtabs, 4, g_app.response_subtab, subtab_bar);
 
     // 3. Sub-tab Content Area
     float content_y = subtab_y + subtab_h + 4.0f;
@@ -203,7 +228,7 @@ void view_response_panel(Rect rect) {
             // Search input
             float tsearch_w = 200.0f;
             Rect tsearch_rect = rect_make(tbar_rect.x, tbar_rect.y + 2.0f, tsearch_w, 26.0f);
-            ui_input_text("table_search_input", g_app.table_search, sizeof(g_app.table_search), "Search table...", tsearch_rect);
+            ui_input_text_icon("table_search_input", ICON_SEARCH, g_app.table_search, sizeof(g_app.table_search), "Search table...", tsearch_rect);
 
             // Row count label
             char rcount_str[32];
@@ -211,9 +236,9 @@ void view_response_panel(Rect rect) {
             font_draw_text(g_ui.font_ui, rcount_str, 0, tsearch_rect.x + tsearch_w + 12.0f, tbar_rect.y + 7.0f, t->text_muted);
 
             // Copy CSV Button
-            float csv_w = 90.0f;
+            float csv_w = 80.0f;
             Rect csv_rect = rect_make(tbar_rect.x + tbar_rect.w - csv_w, tbar_rect.y + 2.0f, csv_w, 26.0f);
-            if (ui_button_ghost("Copy CSV", csv_rect)) {
+            if (ui_button_icon(ICON_COPY, "CSV", csv_rect, false)) {
                 char* csv_text = json_table_to_csv(g_app.active_json_table);
                 if (csv_text) {
                     glfwSetClipboardString(NULL, csv_text);

@@ -74,4 +74,12 @@ void fredbuf_replace_all(FredBuffer* buf, const char* new_text);
 void fredbuf_undo(FredBuffer* buf, size_t* out_cursor);
 void fredbuf_redo(FredBuffer* buf, size_t* out_cursor);
 
+// Fast Search (Boyer-Moore-Horspool algorithm)
+bool fredbuf_find_forward(const FredBuffer* buf, const char* query, size_t query_len, size_t start_offset, bool case_sensitive, TextRange* out_match);
+bool fredbuf_find_backward(const FredBuffer* buf, const char* query, size_t query_len, size_t start_offset, bool case_sensitive, TextRange* out_match);
+bool fredbuf_find_all(const FredBuffer* buf, const char* query, size_t query_len, bool case_sensitive, TextRange** out_ranges, size_t* out_count);
+size_t fredbuf_search_text(const char* text, size_t text_len, const char* query, size_t query_len, bool case_sensitive, TextRange** out_ranges, size_t* out_count);
+bool fredbuf_replace_range(FredBuffer* buf, size_t offset, size_t len, const char* replacement, size_t repl_len);
+size_t fredbuf_replace_all_matches(FredBuffer* buf, const char* query, size_t query_len, const char* replacement, size_t repl_len, bool case_sensitive);
+
 #endif // FREDBUF_H

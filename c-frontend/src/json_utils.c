@@ -3,11 +3,39 @@
 
 char* json_format_string(const char* json_raw) {
     if (!json_raw || !*json_raw) return strdup("");
+    size_t raw_len = strlen(json_raw);
+    // If JSON response is larger than 4MB, return raw to avoid high memory serialization overhead
+    if (raw_len > 4 * 1024 * 1024) {
+        return strdup(json_raw);
+    }
     cJSON* parsed = cJSON_Parse(json_raw);
     if (!parsed) return strdup(json_raw);
     char* formatted = cJSON_Print(parsed);
     cJSON_Delete(parsed);
-    return formatted ? formatted : strdup(json_raw);
+    if (!formatted) return strdup(json_raw);
+
+    // Replace tabs with 2 spaces for standard API client formatting
+    size_t flen = strlen(formatted);
+    size_t tab_count = 0;
+    for (size_t i = 0; i < flen; i++) {
+        if (formatted[i] == '\t') tab_count++;
+    }
+
+    if (tab_count == 0) return formatted;
+
+    char* out = malloc(flen + tab_count * 2 + 1);
+    size_t out_idx = 0;
+    for (size_t i = 0; i < flen; i++) {
+        if (formatted[i] == '\t') {
+            out[out_idx++] = ' ';
+            out[out_idx++] = ' ';
+        } else {
+            out[out_idx++] = formatted[i];
+        }
+    }
+    out[out_idx] = '\0';
+    free(formatted);
+    return out;
 }
 
 bool json_validate(const char* json_raw) {
@@ -25,12 +53,13 @@ JsonToken* json_tokenize(const char* str, size_t len, size_t* out_token_count) {
     }
 
     size_t cap = 128;
+    size_t max_tokens = 100000;
     JsonToken* tokens = malloc(sizeof(JsonToken) * cap);
     size_t count = 0;
 
     size_t i = 0;
 
-    while (i < len) {
+    while (i < len && count < max_tokens) {
         char c = str[i];
 
         if (isspace((unsigned char)c)) {
@@ -225,11 +254,11 @@ JsonTable* json_table_from_string(const char* json_str) {
         // Count total rows across all items
         int arr_size = cJSON_GetArraySize(root);
         size_t total_rows = 0;
-        for (int i = 0; i < arr_size; i++) {
+        for (int i = 0; i < arr_size && total_rows < 5000; i++) {
             cJSON* item = cJSON_GetArrayItem(root, i);
             if (cJSON_IsObject(item)) {
                 cJSON* child = item->child;
-                while (child) {
+                while (child && total_rows < 5000) {
                     total_rows++;
                     child = child->next;
                 }

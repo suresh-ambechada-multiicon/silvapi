@@ -2,6 +2,7 @@
 #define PANEL_LAYOUT_H
 
 #include "silvapi.h"
+#include "spring.h"
 #include <stdbool.h>
 
 typedef enum {
@@ -36,6 +37,7 @@ struct PanelNode {
     
     // Split node members
     float split_pct;        // 0.0 to 1.0
+    Spring1D split_spring;  // Spring-interpolated split ratio
     PanelNode* child_a;     // Left or Top
     PanelNode* child_b;     // Right or Bottom
     PanelNode* parent;
@@ -44,10 +46,11 @@ struct PanelNode {
     ViewKind views[8];
     size_t view_count;
     size_t active_view_index;
+    SpringRect tab_indicator_spring;
     
     // Animation & collapse
     bool is_collapsed;
-    float collapse_anim;    // 0.0 = collapsed, 1.0 = expanded
+    Spring1D collapse_spring;
     float min_size_a;
     float min_size_b;
 };
@@ -61,7 +64,7 @@ typedef struct {
     PanelNode* source_node;
     PanelNode* hover_target_node;
     DockZone hover_dock_zone;
-    Rect dock_preview_rect;
+    SpringRect dock_preview_spring;
     
     // Active splitter drag
     PanelNode* dragging_splitter_node;
@@ -71,7 +74,7 @@ typedef struct {
     // Sidebar specific
     bool sidebar_collapsed;
     float sidebar_width;
-    float sidebar_anim_pct; // 0.0 (collapsed) .. 1.0 (expanded)
+    Spring1D sidebar_spring; // 0.0 (collapsed) .. 1.0 (expanded) with fluid spring physics
 } LayoutManager;
 
 extern LayoutManager g_layout;

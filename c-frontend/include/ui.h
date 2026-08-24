@@ -12,6 +12,7 @@ typedef struct {
     bool mouse_down[3];       // 0: left, 1: right, 2: middle
     bool mouse_clicked[3];
     bool mouse_released[3];
+    int mouse_click_count;
     float scroll_x, scroll_y;
     
     // Keyboard
@@ -59,19 +60,45 @@ void ui_end_frame(void);
 // ID Generation
 uint64_t ui_hash_id(const char* str, uint64_t seed);
 
+// Flexbox & Auto-Layout Engine
+typedef struct {
+    Rect container;
+    float gap;
+    float pad_x;
+    float pad_y;
+    float cur_x;
+    float cur_y;
+    float max_x;
+    float max_y;
+    bool is_row;
+} UILayout;
+
+UILayout ui_layout_row(Rect container, float gap, float pad_x, float pad_y);
+UILayout ui_layout_col(Rect container, float gap, float pad_x, float pad_y);
+Rect ui_layout_item_fixed(UILayout* l, float main_size, float cross_size);
+Rect ui_layout_item_flex(UILayout* l, float flex_w, float min_w, float cross_size);
+Rect ui_layout_item_right(UILayout* l, float width, float height);
+bool ui_layout_can_fit(const UILayout* l, float required_size);
+float ui_layout_remaining_space(const UILayout* l);
+
 // Drawing & Layout Primitives
 bool ui_button(const char* label, Rect rect, bool is_primary);
 bool ui_button_ghost(const char* label, Rect rect);
 bool ui_button_danger(const char* label, Rect rect);
 bool ui_button_icon(IconType icon, const char* label, Rect rect, bool is_active);
+bool ui_button_primary_icon(IconType icon, const char* label, Rect rect);
+bool ui_button_danger_icon(IconType icon, const char* label, Rect rect);
 bool ui_checkbox(const char* label, bool* checked, Rect rect);
 
 bool ui_input_text(const char* id_str, char* buffer, size_t buffer_size, const char* placeholder, Rect rect);
+bool ui_input_text_icon(const char* id_str, IconType icon, char* buffer, size_t buffer_size, const char* placeholder, Rect rect);
 bool ui_code_editor(const char* id_str, char** content_ptr, size_t* content_len, size_t* content_cap,
                     bool show_line_numbers, bool is_json_syntax, bool is_readonly, Rect rect, float* scroll_y);
+void ui_code_editor_open_search(const char* id_str);
 
 // Tabs & Navigation
 int ui_tab_bar(const char* id_str, const char** tab_labels, int tab_count, int active_index, Rect rect);
+int ui_tab_bar_icons(const char* id_str, const IconType* icons, const char** tab_labels, int tab_count, int active_index, Rect rect);
 bool ui_tab_item(const char* label, HttpMethod method, bool is_active, bool is_dirty, bool has_close, bool* out_close_clicked, Rect rect);
 
 // Dropdowns & Menus
@@ -103,5 +130,9 @@ void ui_context_menu_end(void);
 
 // Tooltip
 void ui_set_tooltip(const char* text);
+
+// Modern Responsive Scrollbar & Kinetic Smooth Scroll Physics
+float ui_smooth_scroll(uint64_t id, Rect container_rect, float content_height, float* inout_scroll_y);
+void ui_draw_scrollbar(uint64_t id, Rect container_rect, float content_height);
 
 #endif // UI_H

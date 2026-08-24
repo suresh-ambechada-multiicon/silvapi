@@ -1,4 +1,5 @@
 #include "gl_backend.h"
+#include "icon.h"
 #include <GL/gl.h>
 #include <GL/glext.h>
 #include "GLFW/glfw3.h"
@@ -83,8 +84,12 @@ static GLint s_u_texture = -1;
 static GLuint s_white_texture = 0;
 static GLuint s_current_texture = 0;
 
-static int s_window_w = 1280;
-static int s_window_h = 720;
+static int s_logical_w = 1280;
+static int s_logical_h = 800;
+static int s_fb_w = 1280;
+static int s_fb_h = 800;
+static float s_dpi_scale_x = 1.0f;
+static float s_dpi_scale_y = 1.0f;
 
 #define MAX_CLIP_STACK 64
 static Rect s_clip_stack[MAX_CLIP_STACK];
@@ -139,7 +144,8 @@ static const char* s_fs_source =
 "            vec2 half_size = v_rect_size * 0.5;\n"
 "            vec2 center_pos = v_local_pos - half_size;\n"
 "            float dist = rounded_box_sdf(center_pos, half_size, v_radius);\n"
-"            float alpha = clamp(0.5 - dist, 0.0, 1.0);\n"
+"            float fw = fwidth(dist);\n"
+"            float alpha = clamp(0.5 - dist / max(fw, 0.001), 0.0, 1.0);\n"
 "            frag_color = vec4(v_color.rgb, v_color.a * alpha);\n"
 "        } else {\n"
 "            frag_color = v_color;\n"
@@ -158,7 +164,6 @@ static GLuint compile_shader(GLenum type, const char* source) {
         char log[1024];
         glGetShaderInfoLog_ptr(shader, sizeof(log), NULL, log);
         fprintf(stderr, "Shader compile error: %s\n", log);
-        glDeleteShader_ptr(shader);
         return 0;
     }
     return shader;
@@ -167,8 +172,6 @@ static GLuint compile_shader(GLenum type, const char* source) {
 static void flush_batch(void) {
     if (s_vertex_count == 0) return;
 
-    glUseProgram_ptr(s_shader_program);
-    glBindVertexArray_ptr(s_vao);
     glBindBuffer_ptr(GL_ARRAY_BUFFER, s_vbo);
     glBufferSubData_ptr(GL_ARRAY_BUFFER, 0, sizeof(Vertex2D) * s_vertex_count, s_vertices);
 
@@ -176,7 +179,9 @@ static void flush_batch(void) {
     glBindTexture(GL_TEXTURE_2D, s_current_texture ? s_current_texture : s_white_texture);
     glUniform1i_ptr(s_u_texture, 0);
 
+    glBindVertexArray_ptr(s_vao);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)s_vertex_count);
+    glBindVertexArray_ptr(0);
 
     s_vertex_count = 0;
 }
@@ -195,11 +200,11 @@ static void update_clip_scissor(void) {
     } else {
         glEnable(GL_SCISSOR_TEST);
         Rect r = s_clip_stack[s_clip_count - 1];
-        // Convert top-left coordinates to bottom-left for OpenGL
-        int sx = (int)r.x;
-        int sy = (int)((float)s_window_h - (r.y + r.h));
-        int sw = (int)r.w;
-        int sh = (int)r.h;
+        // Convert logical coordinates to physical framebuffer pixels for OpenGL
+        int sx = (int)(r.x * s_dpi_scale_x);
+        int sy = (int)(((float)s_logical_h - (r.y + r.h)) * s_dpi_scale_y);
+        int sw = (int)(r.w * s_dpi_scale_x);
+        int sh = (int)(r.h * s_dpi_scale_y);
         if (sw < 0) sw = 0;
         if (sh < 0) sh = 0;
         glScissor(sx, sy, sw, sh);
@@ -227,12 +232,16 @@ Rect r_get_clip(void) {
     if (s_clip_count > 0) {
         return s_clip_stack[s_clip_count - 1];
     }
-    return rect_make(0, 0, (float)s_window_w, (float)s_window_h);
+    return rect_make(0, 0, (float)s_logical_w, (float)s_logical_h);
 }
 
-bool gl_backend_init(int window_width, int window_height) {
-    s_window_w = window_width;
-    s_window_h = window_height;
+bool gl_backend_init(int logical_w, int logical_h, int fb_w, int fb_h) {
+    s_logical_w = logical_w > 0 ? logical_w : 1280;
+    s_logical_h = logical_h > 0 ? logical_h : 800;
+    s_fb_w = fb_w > 0 ? fb_w : s_logical_w;
+    s_fb_h = fb_h > 0 ? fb_h : s_logical_h;
+    s_dpi_scale_x = (float)s_fb_w / (float)s_logical_w;
+    s_dpi_scale_y = (float)s_fb_h / (float)s_logical_h;
 
     // Load function pointers via GLFW
     glCreateShader_ptr = (PFNGLCREATESHADERPROC)glfwGetProcAddress("glCreateShader");
@@ -328,20 +337,28 @@ bool gl_backend_init(int window_width, int window_height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &white_pixel);
 
+    // Initialize SVG Vector Icon Atlas System
+    icon_system_init();
+
     return true;
 }
 
 void gl_backend_shutdown(void) {
+    icon_system_shutdown();
     if (s_white_texture) glDeleteTextures(1, &s_white_texture);
     if (s_vbo) glDeleteBuffers_ptr(1, &s_vbo);
     if (s_vao) glDeleteVertexArrays_ptr(1, &s_vao);
     if (s_shader_program) glDeleteProgram_ptr(s_shader_program);
 }
 
-void gl_backend_resize(int width, int height) {
-    s_window_w = width;
-    s_window_h = height;
-    glViewport(0, 0, width, height);
+void gl_backend_resize(int logical_w, int logical_h, int fb_w, int fb_h) {
+    s_logical_w = logical_w > 0 ? logical_w : 1280;
+    s_logical_h = logical_h > 0 ? logical_h : 800;
+    s_fb_w = fb_w > 0 ? fb_w : s_logical_w;
+    s_fb_h = fb_h > 0 ? fb_h : s_logical_h;
+    s_dpi_scale_x = (float)s_fb_w / (float)s_logical_w;
+    s_dpi_scale_y = (float)s_fb_h / (float)s_logical_h;
+    glViewport(0, 0, s_fb_w, s_fb_h);
 }
 
 void gl_backend_begin_frame(void) {
@@ -352,12 +369,13 @@ void gl_backend_begin_frame(void) {
     glDisable(GL_SCISSOR_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_MULTISAMPLE);
 
-    // Set ortho projection matrix: (0, 0) top-left to (w, h) bottom-right
+    // Set ortho projection matrix matching exact logical window points
     float L = 0.0f;
-    float R = (float)s_window_w;
+    float R = (float)s_logical_w;
     float T = 0.0f;
-    float B = (float)s_window_h;
+    float B = (float)s_logical_h;
     float N = -1.0f;
     float F = 1.0f;
 
@@ -472,162 +490,7 @@ void r_draw_textured_quad(Rect dst, Rect src_uv, uint32_t texture_id, Color tint
               tint, 0.0f, dst.w, dst.h, 1.0f);
 }
 
-// Procedural vector icon drawing
+// NanoSVG Lucide Vector Icon Drawing
 void r_draw_icon(IconType icon, Rect rect, Color color) {
-    float cx = rect.x + rect.w * 0.5f;
-    float cy = rect.y + rect.h * 0.5f;
-    float s = fminf(rect.w, rect.h) * 0.45f;
-
-    switch (icon) {
-        case ICON_SEARCH: {
-            float r = s * 0.65f;
-            Vec2 center = {cx - s * 0.2f, cy - s * 0.2f};
-            // Circle ring approximation
-            const int segs = 12;
-            for (int i = 0; i < segs; i++) {
-                float a1 = (float)i / segs * 6.283185f;
-                float a2 = (float)(i + 1) / segs * 6.283185f;
-                r_draw_line((Vec2){center.x + cosf(a1)*r, center.y + sinf(a1)*r},
-                            (Vec2){center.x + cosf(a2)*r, center.y + sinf(a2)*r}, 1.5f, color);
-            }
-            r_draw_line((Vec2){center.x + r * 0.7f, center.y + r * 0.7f},
-                        (Vec2){cx + s * 0.8f, cy + s * 0.8f}, 2.0f, color);
-            break;
-        }
-        case ICON_PLUS: {
-            r_draw_line((Vec2){cx - s, cy}, (Vec2){cx + s, cy}, 1.5f, color);
-            r_draw_line((Vec2){cx, cy - s}, (Vec2){cx, cy + s}, 1.5f, color);
-            break;
-        }
-        case ICON_CLOSE: {
-            float d = s * 0.7f;
-            r_draw_line((Vec2){cx - d, cy - d}, (Vec2){cx + d, cy + d}, 1.5f, color);
-            r_draw_line((Vec2){cx + d, cy - d}, (Vec2){cx - d, cy + d}, 1.5f, color);
-            break;
-        }
-        case ICON_PLAY: {
-            float d = s * 0.8f;
-            Vec2 p0 = {cx - d * 0.6f, cy - d};
-            Vec2 p1 = {cx + d * 0.8f, cy};
-            Vec2 p2 = {cx - d * 0.6f, cy + d};
-            r_draw_line(p0, p1, 1.5f, color);
-            r_draw_line(p1, p2, 1.5f, color);
-            r_draw_line(p2, p0, 1.5f, color);
-            // Filled triangle
-            set_current_texture(0);
-            if (s_vertex_count + 3 < MAX_BATCH_VERTICES) {
-                Vertex2D v0 = {p0.x, p0.y, 0,0, color.r, color.g, color.b, color.a, 0,0,0,0,0,0};
-                Vertex2D v1 = {p1.x, p1.y, 0,0, color.r, color.g, color.b, color.a, 0,0,0,0,0,0};
-                Vertex2D v2 = {p2.x, p2.y, 0,0, color.r, color.g, color.b, color.a, 0,0,0,0,0,0};
-                s_vertices[s_vertex_count++] = v0;
-                s_vertices[s_vertex_count++] = v1;
-                s_vertices[s_vertex_count++] = v2;
-            }
-            break;
-        }
-        case ICON_STOP: {
-            float d = s * 0.7f;
-            r_draw_rect(rect_make(cx - d, cy - d, d * 2.0f, d * 2.0f), color);
-            break;
-        }
-        case ICON_CHEVRON_RIGHT: {
-            float d = s * 0.5f;
-            r_draw_line((Vec2){cx - d * 0.5f, cy - d}, (Vec2){cx + d * 0.5f, cy}, 1.5f, color);
-            r_draw_line((Vec2){cx + d * 0.5f, cy}, (Vec2){cx - d * 0.5f, cy + d}, 1.5f, color);
-            break;
-        }
-        case ICON_CHEVRON_DOWN: {
-            float d = s * 0.5f;
-            r_draw_line((Vec2){cx - d, cy - d * 0.5f}, (Vec2){cx, cy + d * 0.5f}, 1.5f, color);
-            r_draw_line((Vec2){cx, cy + d * 0.5f}, (Vec2){cx + d, cy - d * 0.5f}, 1.5f, color);
-            break;
-        }
-        case ICON_FOLDER:
-        case ICON_FOLDER_OPEN: {
-            float fw = s * 1.8f;
-            float fh = s * 1.3f;
-            float fx = cx - fw * 0.5f;
-            float fy = cy - fh * 0.5f;
-            // Folder tab
-            r_draw_rect(rect_make(fx, fy, fw * 0.45f, fh * 0.35f), color);
-            // Folder body
-            r_draw_rect_bordered(rect_make(fx, fy + fh * 0.25f, fw, fh * 0.75f), 1.0f, color, color_with_alpha(color, 0.15f));
-            break;
-        }
-        case ICON_FILE: {
-            float fw = s * 1.2f;
-            float fh = s * 1.6f;
-            float fx = cx - fw * 0.5f;
-            float fy = cy - fh * 0.5f;
-            r_draw_rect_bordered(rect_make(fx, fy, fw, fh), 1.0f, color, color_with_alpha(color, 0.1f));
-            r_draw_line((Vec2){fx + fw * 0.25f, fy + fh * 0.35f}, (Vec2){fx + fw * 0.75f, fy + fh * 0.35f}, 1.0f, color);
-            r_draw_line((Vec2){fx + fw * 0.25f, fy + fh * 0.6f}, (Vec2){fx + fw * 0.75f, fy + fh * 0.6f}, 1.0f, color);
-            break;
-        }
-        case ICON_TRASH: {
-            float w = s * 1.2f;
-            float h = s * 1.4f;
-            r_draw_line((Vec2){cx - w * 0.6f, cy - h * 0.5f}, (Vec2){cx + w * 0.6f, cy - h * 0.5f}, 1.5f, color);
-            r_draw_rect_bordered(rect_make(cx - w * 0.4f, cy - h * 0.35f, w * 0.8f, h * 0.85f), 1.0f, color, color_with_alpha(color, 0.1f));
-            break;
-        }
-        case ICON_COPY: {
-            float d = s * 0.9f;
-            r_draw_rect_bordered(rect_make(cx - d * 0.8f, cy - d * 0.8f, d * 1.1f, d * 1.1f), 1.0f, color, color_rgba(0,0,0,0));
-            r_draw_rect_bordered(rect_make(cx - d * 0.3f, cy - d * 0.3f, d * 1.1f, d * 1.1f), 1.0f, color, color_with_alpha(color, 0.2f));
-            break;
-        }
-        case ICON_CHECK: {
-            Vec2 p0 = {cx - s * 0.7f, cy};
-            Vec2 p1 = {cx - s * 0.1f, cy + s * 0.6f};
-            Vec2 p2 = {cx + s * 0.8f, cy - s * 0.6f};
-            r_draw_line(p0, p1, 2.0f, color);
-            r_draw_line(p1, p2, 2.0f, color);
-            break;
-        }
-        case ICON_SETTINGS: {
-            float r = s * 0.7f;
-            for (int i = 0; i < 6; i++) {
-                float a = (float)i / 6.0f * 6.283185f;
-                r_draw_line((Vec2){cx, cy}, (Vec2){cx + cosf(a)*r, cy + sinf(a)*r}, 2.0f, color);
-            }
-            r_draw_rect_rounded(rect_make(cx - r*0.4f, cy - r*0.4f, r*0.8f, r*0.8f), r*0.4f, color);
-            break;
-        }
-        case ICON_VARIABLE: {
-            // Draw {{ }} or {x} symbol
-            float d = s * 0.8f;
-            r_draw_line((Vec2){cx - d, cy - d}, (Vec2){cx - d * 0.5f, cy}, 1.5f, color);
-            r_draw_line((Vec2){cx - d * 0.5f, cy}, (Vec2){cx - d, cy + d}, 1.5f, color);
-            r_draw_line((Vec2){cx + d, cy - d}, (Vec2){cx + d * 0.5f, cy}, 1.5f, color);
-            r_draw_line((Vec2){cx + d * 0.5f, cy}, (Vec2){cx + d, cy + d}, 1.5f, color);
-            break;
-        }
-        case ICON_IMPORT: {
-            float d = s * 0.8f;
-            r_draw_line((Vec2){cx, cy - d}, (Vec2){cx, cy + d * 0.5f}, 1.5f, color);
-            r_draw_line((Vec2){cx - d * 0.5f, cy}, (Vec2){cx, cy + d * 0.5f}, 1.5f, color);
-            r_draw_line((Vec2){cx + d * 0.5f, cy}, (Vec2){cx, cy + d * 0.5f}, 1.5f, color);
-            r_draw_line((Vec2){cx - d * 0.7f, cy + d}, (Vec2){cx + d * 0.7f, cy + d}, 1.5f, color);
-            break;
-        }
-        case ICON_DOT: {
-            float r = s * 0.4f;
-            r_draw_rect_rounded(rect_make(cx - r, cy - r, r * 2.0f, r * 2.0f), r, color);
-            break;
-        }
-        case ICON_REFRESH: {
-            float r = s * 0.7f;
-            const int segs = 10;
-            for (int i = 0; i < segs; i++) {
-                float a1 = (float)i / 12.0f * 6.283185f;
-                float a2 = (float)(i + 1) / 12.0f * 6.283185f;
-                r_draw_line((Vec2){cx + cosf(a1)*r, cy + sinf(a1)*r},
-                            (Vec2){cx + cosf(a2)*r, cy + sinf(a2)*r}, 1.5f, color);
-            }
-            break;
-        }
-        default:
-            break;
-    }
+    icon_draw(icon, rect, color);
 }

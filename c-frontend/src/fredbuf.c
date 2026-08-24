@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "fredbuf.h"
 #include <stdlib.h>
 #include <string.h>
@@ -364,4 +367,209 @@ void fredbuf_redo(FredBuffer* buf, size_t* out_cursor) {
     // Push to undo
     act->next = buf->undo_stack;
     buf->undo_stack = act;
+}
+
+#include <ctype.h>
+
+static inline bool fred_char_eq(char a, char b, bool case_sensitive) {
+    if (case_sensitive) return a == b;
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+
+// Build Horspool skip table
+static void fred_build_skip_table(const char* query, size_t m, bool case_sensitive, size_t skip[256]) {
+    for (int i = 0; i < 256; i++) {
+        skip[i] = m;
+    }
+    for (size_t i = 0; i < m - 1; i++) {
+        unsigned char c = (unsigned char)query[i];
+        if (case_sensitive) {
+            skip[c] = m - 1 - i;
+        } else {
+            skip[tolower(c)] = m - 1 - i;
+            skip[toupper(c)] = m - 1 - i;
+        }
+    }
+}
+
+// Fast Boyer-Moore-Horspool search in contiguous memory
+size_t fredbuf_search_text(const char* text, size_t text_len, const char* query, size_t query_len, bool case_sensitive, TextRange** out_ranges, size_t* out_count) {
+    if (out_count) *out_count = 0;
+    if (out_ranges) *out_ranges = NULL;
+    if (!text || text_len == 0 || !query || query_len == 0 || text_len < query_len) {
+        return 0;
+    }
+
+    size_t skip[256];
+    fred_build_skip_table(query, query_len, case_sensitive, skip);
+
+    size_t count = 0;
+    size_t cap = 32;
+    TextRange* ranges = out_ranges ? malloc(sizeof(TextRange) * cap) : NULL;
+
+    size_t k = query_len - 1;
+    while (k < text_len) {
+        size_t i = query_len - 1;
+        size_t j = k;
+        while (fred_char_eq(text[j], query[i], case_sensitive)) {
+            if (i == 0) {
+                // Match found at j
+                if (ranges) {
+                    if (count >= cap) {
+                        cap *= 2;
+                        ranges = realloc(ranges, sizeof(TextRange) * cap);
+                    }
+                    ranges[count].start = j;
+                    ranges[count].length = query_len;
+                }
+                count++;
+                break;
+            }
+            i--;
+            j--;
+        }
+        unsigned char last_c = (unsigned char)text[k];
+        size_t step = case_sensitive ? skip[last_c] : skip[tolower(last_c)];
+        if (step == 0) step = 1;
+        k += step;
+    }
+
+    if (out_count) *out_count = count;
+    if (out_ranges) *out_ranges = ranges;
+    return count;
+}
+
+bool fredbuf_find_all(const FredBuffer* buf, const char* query, size_t query_len, bool case_sensitive, TextRange** out_ranges, size_t* out_count) {
+    if (!buf || !query || query_len == 0) {
+        if (out_count) *out_count = 0;
+        if (out_ranges) *out_ranges = NULL;
+        return false;
+    }
+
+    char* text = fredbuf_to_string(buf);
+    size_t len = fredbuf_length(buf);
+    size_t count = fredbuf_search_text(text, len, query, query_len, case_sensitive, out_ranges, out_count);
+    free(text);
+    return count > 0;
+}
+
+bool fredbuf_find_forward(const FredBuffer* buf, const char* query, size_t query_len, size_t start_offset, bool case_sensitive, TextRange* out_match) {
+    if (!buf || !query || query_len == 0) return false;
+    char* text = fredbuf_to_string(buf);
+    size_t len = fredbuf_length(buf);
+    if (len < query_len) {
+        free(text);
+        return false;
+    }
+
+    if (start_offset > len - query_len) start_offset = 0; // Wrap around if starting past end
+
+    size_t skip[256];
+    fred_build_skip_table(query, query_len, case_sensitive, skip);
+
+    // Search from start_offset to end
+    size_t k = start_offset + query_len - 1;
+    while (k < len) {
+        size_t i = query_len - 1;
+        size_t j = k;
+        while (fred_char_eq(text[j], query[i], case_sensitive)) {
+            if (i == 0) {
+                if (out_match) {
+                    out_match->start = j;
+                    out_match->length = query_len;
+                }
+                free(text);
+                return true;
+            }
+            i--;
+            j--;
+        }
+        unsigned char last_c = (unsigned char)text[k];
+        size_t step = case_sensitive ? skip[last_c] : skip[tolower(last_c)];
+        if (step == 0) step = 1;
+        k += step;
+    }
+
+    // If not found and start_offset > 0, wrap around to search from 0 to start_offset
+    if (start_offset > 0) {
+        k = query_len - 1;
+        size_t limit = start_offset + query_len - 1;
+        if (limit > len) limit = len;
+        while (k < limit) {
+            size_t i = query_len - 1;
+            size_t j = k;
+            while (fred_char_eq(text[j], query[i], case_sensitive)) {
+                if (i == 0) {
+                    if (out_match) {
+                        out_match->start = j;
+                        out_match->length = query_len;
+                    }
+                    free(text);
+                    return true;
+                }
+                i--;
+                j--;
+            }
+            unsigned char last_c = (unsigned char)text[k];
+            size_t step = case_sensitive ? skip[last_c] : skip[tolower(last_c)];
+            if (step == 0) step = 1;
+            k += step;
+        }
+    }
+
+    free(text);
+    return false;
+}
+
+bool fredbuf_find_backward(const FredBuffer* buf, const char* query, size_t query_len, size_t start_offset, bool case_sensitive, TextRange* out_match) {
+    if (!buf || !query || query_len == 0) return false;
+    TextRange* ranges = NULL;
+    size_t count = 0;
+    if (!fredbuf_find_all(buf, query, query_len, case_sensitive, &ranges, &count) || count == 0) {
+        return false;
+    }
+
+    // Find the match immediately before start_offset
+    int found_idx = -1;
+    for (int i = (int)count - 1; i >= 0; i--) {
+        if (ranges[i].start < start_offset) {
+            found_idx = i;
+            break;
+        }
+    }
+    // If none before start_offset, wrap to last match
+    if (found_idx < 0) {
+        found_idx = (int)count - 1;
+    }
+
+    if (out_match) {
+        *out_match = ranges[found_idx];
+    }
+    free(ranges);
+    return true;
+}
+
+bool fredbuf_replace_range(FredBuffer* buf, size_t offset, size_t len, const char* replacement, size_t repl_len) {
+    if (!buf) return false;
+    fredbuf_delete_range(buf, offset, len);
+    if (replacement && repl_len > 0) {
+        fredbuf_insert_string(buf, offset, replacement, repl_len);
+    }
+    return true;
+}
+
+size_t fredbuf_replace_all_matches(FredBuffer* buf, const char* query, size_t query_len, const char* replacement, size_t repl_len, bool case_sensitive) {
+    if (!buf || !query || query_len == 0) return 0;
+    TextRange* ranges = NULL;
+    size_t count = 0;
+    if (!fredbuf_find_all(buf, query, query_len, case_sensitive, &ranges, &count) || count == 0) {
+        return 0;
+    }
+
+    // Replace from back to front so offsets remain valid
+    for (int i = (int)count - 1; i >= 0; i--) {
+        fredbuf_replace_range(buf, ranges[i].start, ranges[i].length, replacement, repl_len);
+    }
+    free(ranges);
+    return count;
 }

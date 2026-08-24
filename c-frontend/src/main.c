@@ -9,6 +9,7 @@
 #include "fredbuf.h"
 #include "panel_layout.h"
 #include "ui.h"
+#include "clay_renderer.h"
 #include "views/views.h"
 #include "GLFW/glfw3.h"
 
@@ -163,6 +164,14 @@ void app_state_init(void) {
 
     if (g_app.tab_count > 0) {
         g_app.active_tab_index = 0;
+        // Populate initial response snapshot so panel is active immediately
+        g_app.active_response.status_code = 200;
+        snprintf(g_app.active_response.status_text, sizeof(g_app.active_response.status_text), "OK");
+        g_app.active_response.latency_ms = 294;
+        const char* sample_json = "{\n  \"userId\": 1,\n  \"id\": 1,\n  \"title\": \"sunt aut facere repellat provident occaecati excepturi optio reprehenderit\",\n  \"body\": \"quia et suscipit\\nsuscipit recusandae consequuntur expedita et cum\\nreprehenderit molestiae ut ut quas totam\\nnostrum rerum est autem sunt rem eveniet architecto\"\n}";
+        g_app.active_response.body = strdup(sample_json);
+        g_app.active_response.body_size = strlen(sample_json);
+        snprintf(g_app.active_response.timestamp, sizeof(g_app.active_response.timestamp), "2026-08-24 15:30:00");
     }
 
     // Load active theme from settings
@@ -194,10 +203,28 @@ static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
 static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     (void)window;
     (void)mods;
+    static double s_last_click_time = 0.0;
+    static float s_last_click_x = 0.0f;
+    static float s_last_click_y = 0.0f;
+
     if (button >= 0 && button < 3) {
         if (action == GLFW_PRESS) {
             g_ui.mouse_down[button] = true;
             g_ui.mouse_clicked[button] = true;
+
+            if (button == 0) {
+                double now = glfwGetTime();
+                if (now - s_last_click_time < 0.35 &&
+                    fabsf(g_ui.mouse_x - s_last_click_x) < 6.0f &&
+                    fabsf(g_ui.mouse_y - s_last_click_y) < 6.0f) {
+                    g_ui.mouse_click_count = (g_ui.mouse_click_count % 3) + 1;
+                } else {
+                    g_ui.mouse_click_count = 1;
+                }
+                s_last_click_time = now;
+                s_last_click_x = g_ui.mouse_x;
+                s_last_click_y = g_ui.mouse_y;
+            }
         } else if (action == GLFW_RELEASE) {
             g_ui.mouse_down[button] = false;
             g_ui.mouse_released[button] = true;
@@ -264,6 +291,7 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_SAMPLES, 4);
 
     int win_w = 1280;
     int win_h = 800;
@@ -284,11 +312,15 @@ int main(int argc, char** argv) {
     glfwSetKeyCallback(window, key_callback);
     glfwSetCharCallback(window, char_callback);
 
+    int fb_w, fb_h;
+    glfwGetFramebufferSize(window, &fb_w, &fb_h);
+
     // Initialize systems
     storage_init();
     http_client_init();
-    gl_backend_init(win_w, win_h);
+    gl_backend_init(win_w, win_h, fb_w, fb_h);
     ui_init(win_w, win_h);
+    clay_renderer_init(win_w, win_h);
     layout_init((float)win_w, (float)win_h);
     app_state_init();
 
@@ -299,28 +331,29 @@ int main(int argc, char** argv) {
         float dt = (float)(current_time - last_time);
         last_time = current_time;
 
-        int display_w, display_h;
-        glfwGetFramebufferSize(window, &display_w, &display_h);
-        g_ui.window_width = display_w;
-        g_ui.window_height = display_h;
+        int logical_w, logical_h;
+        glfwGetWindowSize(window, &logical_w, &logical_h);
+        glfwGetFramebufferSize(window, &fb_w, &fb_h);
 
-        glViewport(0, 0, display_w, display_h);
-        gl_backend_resize(display_w, display_h);
+        g_ui.window_width = logical_w;
+        g_ui.window_height = logical_h;
+
+        gl_backend_resize(logical_w, logical_h, fb_w, fb_h);
         gl_backend_begin_frame();
         ui_begin_frame(dt);
 
         Theme* t = theme_get_active();
-        r_draw_rect(rect_make(0, 0, (float)display_w, (float)display_h), t->background);
+        r_draw_rect(rect_make(0, 0, (float)logical_w, (float)logical_h), t->background);
 
         // 1. Top Bar
-        float topbar_h = 40.0f;
-        Rect topbar_rect = rect_make(0, 0, (float)display_w, topbar_h);
+        float topbar_h = 42.0f;
+        Rect topbar_rect = rect_make(0, 0, (float)logical_w, topbar_h);
         view_top_bar(topbar_rect);
 
         // 2. Docking Layout System (Sidebar, Request Editor, Response Panel, etc.)
         float main_y = topbar_h;
-        float main_h = (float)display_h - topbar_h;
-        Rect layout_rect = rect_make(0, main_y, (float)display_w, main_h);
+        float main_h = (float)logical_h - topbar_h;
+        Rect layout_rect = rect_make(0, main_y, (float)logical_w, main_h);
 
         layout_update_bounds(g_layout.root, layout_rect, dt);
         layout_render_and_handle(g_layout.root);
@@ -338,6 +371,7 @@ int main(int argc, char** argv) {
     // Cleanup
     app_state_shutdown();
     layout_shutdown();
+    clay_renderer_shutdown();
     ui_shutdown();
     gl_backend_shutdown();
     http_client_shutdown();

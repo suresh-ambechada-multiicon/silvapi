@@ -1,0 +1,36 @@
+{
+	"font":	{
+		"size_ui":	15,
+		"size_mono":	14,
+		"size_bold":	15,
+		"family_ui":	"",
+		"family_mono":	""
+	},
+	"render":	{
+		"dpi_scale":	1,
+		"alpha_gamma":	1.3999999761581421,
+		"stem_darken":	0.25,
+		"multisample":	false
+	},
+	"text":	{
+		"hinting":	"normal",
+		"subpixel_buckets":	1
+	},
+	"icon":	{
+		"stroke_width":	2.25,
+		"edge_padding":	0
+	},
+	"layout":	{
+		"topbar_height":	42,
+		"row_height":	28,
+		"corner_radius":	4,
+		"pad_small":	4,
+		"pad_medium":	8,
+		"pad_large":	12,
+		"gap_small":	4,
+		"gap_medium":	6,
+		"icon_size_small":	14,
+		"icon_size_medium":	16
+	},
+	"theme":	"ayu-dark"
+}

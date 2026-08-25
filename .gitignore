@@ -42,3 +42,10 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# C frontend build output
+/c-frontend/build/
+/c-frontend/bin/
+*.o
+*.a
+*.d

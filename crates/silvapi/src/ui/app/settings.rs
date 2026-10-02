@@ -76,18 +76,25 @@ impl AppView {
         let font_family = Self::configured_font_family(cx);
         let font_size = Self::configured_font_size(cx);
         let theme = Theme::global_mut(cx);
-        theme.font_family = font_family;
+        theme.font_family = font_family.clone();
+        theme.mono_font_family = font_family;
         theme.font_size = font_size;
+        theme.mono_font_size = font_size;
         cx.refresh_windows();
     }
 
-    pub(super) fn apply_user_font_settings_app(cx: &mut App) {
+    pub(crate) fn apply_user_font_settings_app(cx: &mut App) {
         if let Some(font_family) = crate::storage::load_setting("ui.font_family")
             .ok()
             .flatten()
             .filter(|font| !font.trim().is_empty())
         {
-            Theme::global_mut(cx).font_family = SharedString::from(font_family);
+            let shared_font = SharedString::from(font_family);
+            Theme::global_mut(cx).font_family = shared_font.clone();
+            Theme::global_mut(cx).mono_font_family = shared_font;
+        } else {
+            let current_font = Theme::global(cx).font_family.clone();
+            Theme::global_mut(cx).mono_font_family = current_font;
         }
         if let Some(font_size) = crate::storage::load_setting("ui.font_size")
             .ok()
@@ -95,7 +102,12 @@ impl AppView {
             .and_then(|size| size.parse::<f32>().ok())
             .filter(|size| (10.0..=24.0).contains(size))
         {
-            Theme::global_mut(cx).font_size = px(font_size);
+            let p_size = px(font_size);
+            Theme::global_mut(cx).font_size = p_size;
+            Theme::global_mut(cx).mono_font_size = p_size;
+        } else {
+            let current_size = Theme::global(cx).font_size;
+            Theme::global_mut(cx).mono_font_size = current_size;
         }
         cx.refresh_windows();
     }

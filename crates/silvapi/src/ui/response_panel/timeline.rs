@@ -466,11 +466,7 @@ impl ResponsePanel {
                                 )
                                 .child(
                                     Button::new("sse-detail-wrap-toggle")
-                                        .icon(if self.sse_detail_soft_wrap {
-                                            IconName::ArrowLeft
-                                        } else {
-                                            IconName::ChevronsUpDown
-                                        })
+                                        .icon(IconName::FileText)
                                         .tooltip(if self.sse_detail_soft_wrap {
                                             "Disable wrap"
                                         } else {

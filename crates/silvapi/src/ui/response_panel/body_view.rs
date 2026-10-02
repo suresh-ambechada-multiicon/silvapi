@@ -367,11 +367,7 @@ impl ResponsePanel {
                         )
                         .child(
                             Button::new("response-wrap-toggle")
-                                .icon(if self.soft_wrap {
-                                    IconName::ArrowLeft
-                                } else {
-                                    IconName::ChevronsUpDown
-                                })
+                                .icon(IconName::FileText)
                                 .tooltip(if self.soft_wrap {
                                     "Disable wrap"
                                 } else {

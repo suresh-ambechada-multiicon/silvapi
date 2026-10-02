@@ -76,11 +76,7 @@ impl ResponsePanel {
                     .when(self.headers_source_view, |el| {
                         el.child(
                             Button::new("headers-wrap-toggle")
-                                .icon(if self.headers_soft_wrap {
-                                    IconName::ArrowLeft
-                                } else {
-                                    IconName::ChevronsUpDown
-                                })
+                                .icon(IconName::FileText)
                                 .tooltip(if self.headers_soft_wrap {
                                     "Disable wrap"
                                 } else {

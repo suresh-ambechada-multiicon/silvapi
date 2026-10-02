@@ -441,6 +441,7 @@ pub(crate) fn handle_collection_file(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn handle_openapi_file(
     path: &std::path::Path,
     app_state: &Entity<AppState>,
@@ -450,6 +451,7 @@ pub(crate) fn handle_openapi_file(
     handle_collection_file(path, app_state, cx, window_handle);
 }
 
+#[allow(dead_code)]
 pub(crate) fn handle_postman_file(
     path: &std::path::Path,
     app_state: &Entity<AppState>,

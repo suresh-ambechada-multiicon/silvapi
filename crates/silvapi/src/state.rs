@@ -147,11 +147,13 @@ impl AppState {
         None
     }
 
+    #[allow(dead_code)]
     pub fn add_collection(&mut self, name: String) {
         let col = Collection::new(name);
         self.workspace.collections.push(col);
     }
 
+    #[allow(dead_code)]
     pub fn add_request_to_collection(&mut self, col_id: &str) -> Option<String> {
         let req = ApiRequest::with_name("New Request");
         let id = req.id.clone();
@@ -164,6 +166,7 @@ impl AppState {
         None
     }
 
+    #[allow(dead_code)]
     pub fn add_folder_to_collection(&mut self, col_id: &str) -> Option<String> {
         let folder = Folder::new("New Folder");
         let id = folder.id.clone();
@@ -521,6 +524,7 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn move_item_up(&mut self, id: &str) {
         for col in &mut self.workspace.collections {
             if move_in_items(&mut col.items, id, true) {
@@ -529,6 +533,7 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn move_item_down(&mut self, id: &str) {
         for col in &mut self.workspace.collections {
             if move_in_items(&mut col.items, id, false) {
@@ -761,6 +766,7 @@ fn rename_copy(item: &mut CollectionItem) {
     }
 }
 
+#[allow(dead_code)]
 fn move_in_items(items: &mut Vec<CollectionItem>, id: &str, up: bool) -> bool {
     if let Some(pos) = items.iter().position(|i| i.id() == id) {
         if up && pos > 0 {
@@ -807,6 +813,7 @@ fn update_in_items(items: &mut Vec<CollectionItem>, id: &str, new_req: ApiReques
     false
 }
 
+#[allow(dead_code)]
 pub fn init(_cx: &mut App) {}
 
 #[cfg(test)]

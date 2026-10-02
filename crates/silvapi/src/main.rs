@@ -86,6 +86,5 @@ fn apply_theme(theme_name: &str, cx: &mut App) {
     if let Some(theme) = ThemeRegistry::global(cx).themes().get(theme_name).cloned() {
         Theme::global_mut(cx).apply_config(&theme);
     }
-    Theme::global_mut(cx).font_family = "Roboto".into();
-    Theme::global_mut(cx).mono_font_family = "Roboto Mono".into();
+    ui::AppView::apply_user_font_settings_app(cx);
 }

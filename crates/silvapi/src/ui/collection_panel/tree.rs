@@ -210,6 +210,7 @@ impl CollectionPanel {
             let app_new_http = self.app_state.clone();
             let app_new_folder = self.app_state.clone();
             let app_click_row = app_click.clone();
+            let panel_click = panel_entity.clone();
             let focus_handle = self.focus_handle.clone();
             let is_renaming = renaming_id.as_deref() == Some(&fi.id);
             let is_selected = selected_id.as_deref() == Some(&fi.id);
@@ -321,11 +322,25 @@ impl CollectionPanel {
                 .hover(|s| s.bg(cx.theme().secondary))
                 .on_click(move |_, window, cx| {
                     focus_handle.focus(window, cx);
+                    panel_click.update(cx, |this, cx| {
+                        this.selected_id = Some(id2.clone());
+                        cx.notify();
+                    });
                     if !is_folder {
                         app_click_row.update(cx, |state, cx| {
                             if state.select_request(&id2) {
                                 cx.emit(AppEvent::RequestSelected);
                             }
+                        });
+                    } else {
+                        panel_click.update(cx, |this, cx| {
+                            if this.expanded.contains(&id2) {
+                                this.expanded.remove(&id2);
+                            } else {
+                                this.expanded.insert(id2.clone());
+                            }
+                            this.flat_dirty = true;
+                            cx.notify();
                         });
                     }
                 })
@@ -357,24 +372,7 @@ impl CollectionPanel {
                 row
             };
 
-            let row = if is_folder {
-                let panel_entity = cx.entity();
-                let toggle_id = fi.id.clone();
-                row.on_click(move |_, _, cx| {
-                    panel_entity.update(cx, |this, cx| {
-                        this.selected_id = Some(toggle_id.clone());
-                        if this.expanded.contains(&toggle_id) {
-                            this.expanded.remove(&toggle_id);
-                        } else {
-                            this.expanded.insert(toggle_id.clone());
-                        }
-                        this.flat_dirty = true;
-                        cx.notify();
-                    });
-                })
-            } else {
-                row
-            };
+
 
             let row = if is_folder {
                 let panel_for_rename = panel_entity.clone();

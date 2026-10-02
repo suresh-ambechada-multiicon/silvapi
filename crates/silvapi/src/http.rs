@@ -531,6 +531,7 @@ fn escape_multipart_header_value(value: &str) -> String {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn build_url_with_params(base_url: &str, params: &[KeyValue]) -> String {
     let enabled: Vec<_> = params
         .iter()

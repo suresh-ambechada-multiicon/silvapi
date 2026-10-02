@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
 use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
@@ -14,6 +12,8 @@ use gpui_kit::component::{
     text::TextView,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
 use crate::state::{AppEvent, AppState};
 use json_table::JsonTableDelegate;
@@ -117,6 +117,7 @@ pub enum ResponseTab {
     Timeline,
 }
 
+#[allow(dead_code)]
 impl ResponseTab {
     fn index(&self) -> usize {
         match self {
@@ -196,14 +197,9 @@ impl ResponsePanel {
                 .folding(true)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
         });
-        let sse_detail_editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .placeholder("Message detail")
-        });
-        let headers_editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .placeholder("Headers")
-        });
+        let sse_detail_editor =
+            cx.new(|cx| EditorState::new(window, cx).placeholder("Message detail"));
+        let headers_editor = cx.new(|cx| EditorState::new(window, cx).placeholder("Headers"));
         let table_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search table..."));
 
@@ -263,16 +259,13 @@ impl ResponsePanel {
                             .as_ref()
                             .map(|r| r.body.as_str())
                             .unwrap_or("");
-                        let fmt = state
-                            .formatted_response
-                            .clone()
-                            .or_else(|| state.response.as_ref().and_then(|r| r.formatted_body.clone()));
-                        (
-                            state.is_loading,
-                            body.len(),
-                            body.to_string(),
-                            fmt,
-                        )
+                        let fmt = state.formatted_response.clone().or_else(|| {
+                            state
+                                .response
+                                .as_ref()
+                                .and_then(|r| r.formatted_body.clone())
+                        });
+                        (state.is_loading, body.len(), body.to_string(), fmt)
                     };
 
                     if is_loading {
@@ -292,13 +285,18 @@ impl ResponsePanel {
 
                         let text_to_display = existing_formatted.as_deref().unwrap_or(&body_text);
                         let editor_empty = this.response_editor.read(cx).value().is_empty();
-                        if this.response_text != text_to_display || (editor_empty && !text_to_display.is_empty()) {
+                        if this.response_text != text_to_display
+                            || (editor_empty && !text_to_display.is_empty())
+                        {
                             this.response_text = text_to_display.to_string();
                             this.set_response_text(text_to_display.to_string(), window, cx);
                         }
 
                         // Only format if not already formatted and under size limit
-                        if existing_formatted.is_none() && body_len > 0 && body_len <= FORMAT_RESPONSE_LIMIT_BYTES {
+                        if existing_formatted.is_none()
+                            && body_len > 0
+                            && body_len <= FORMAT_RESPONSE_LIMIT_BYTES
+                        {
                             let text = body_text.clone();
                             let app_state_clone = app_state.clone();
                             cx.spawn(async move |_, cx| {
@@ -312,7 +310,9 @@ impl ResponsePanel {
                                             resp.formatted_body = Some(formatted.clone());
                                         }
                                         if let Some(req_id) = &state.active_request_id {
-                                            if let Some(history) = state.workspace.response_cache.get_mut(req_id) {
+                                            if let Some(history) =
+                                                state.workspace.response_cache.get_mut(req_id)
+                                            {
                                                 if let Some(last) = history.last_mut() {
                                                     last.formatted_body = Some(formatted.clone());
                                                 }
@@ -442,12 +442,17 @@ impl Render for ResponsePanel {
                     .iter()
                     .any(|(k, v)| k.to_lowercase() == "content-type" && v.contains("text/html"))
             });
-        let has_json_table = self.app_state.read(cx).response.as_ref().map_or(false, |r| {
-            let b = r.body.trim_start();
-            b.len() <= FORMAT_RESPONSE_LIMIT_BYTES
-                && ((b.starts_with('{') && b.ends_with('}'))
-                    || (b.starts_with('[') && b.ends_with(']')))
-        });
+        let has_json_table = self
+            .app_state
+            .read(cx)
+            .response
+            .as_ref()
+            .map_or(false, |r| {
+                let b = r.body.trim_start();
+                b.len() <= FORMAT_RESPONSE_LIMIT_BYTES
+                    && ((b.starts_with('{') && b.ends_with('}'))
+                        || (b.starts_with('[') && b.ends_with(']')))
+            });
 
         let mut visible_tabs = vec![ResponseTab::Response];
         if has_json_table {
@@ -642,13 +647,18 @@ impl ResponsePanel {
     }
 
     /// True when a cell is selected, so the detail panel has something to show.
+    #[allow(dead_code)]
     fn json_detail_open(&self, cx: &App) -> bool {
         self.json_table
             .as_ref()
             .is_some_and(|table| table.read(cx).selected_cell().is_some())
     }
 
-    fn render_json_table_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_json_table_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if self.json_table.is_none() {
             self.rebuild_json_table(window, cx);
         }
@@ -854,7 +864,7 @@ impl ResponsePanel {
                                 .icon(if maximized {
                                     IconName::WindowRestore
                                 } else {
-                                    IconName::Maximize
+                                    IconName::WindowMaximize
                                 })
                                 .tooltip(if maximized {
                                     "Restore detail"
@@ -1162,7 +1172,6 @@ fn push_header_line(out: &mut String, key: &str, value: &str) {
     let _ = writeln!(out, "{}: {}", key, value);
 }
 
-
 /// Prepare an HTML body for the lightweight `TextView::html` renderer:
 /// remove elements it can't meaningfully render (whose raw source would
 /// otherwise appear as text), strip comments, and collapse newlines (gpui's
@@ -1246,7 +1255,6 @@ fn head_on_char_boundary(value: &str, max_bytes: usize) -> &str {
     }
     &value[..end]
 }
-
 
 fn single_line_preview(value: &str, max_bytes: usize) -> String {
     let mut preview = head_on_char_boundary(value, max_bytes)

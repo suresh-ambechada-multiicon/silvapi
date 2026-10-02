@@ -613,34 +613,31 @@ impl Render for CollectionPanel {
                         };
                         let item = &flat[new_pos];
                         let item_id = item.id.clone();
-                        let is_folder = item.is_folder;
                         this.selected_id = Some(item_id.clone());
-                        if !is_folder {
-                            this.app_state.update(cx, |state, cx| {
-                                if state.select_request(&item_id) {
-                                    cx.emit(AppEvent::RequestSelected);
-                                }
-                            });
-                        }
                         this.list_scroll
                             .scroll_to_item(new_pos, gpui_kit::ScrollStrategy::Nearest);
                         cx.notify();
                     }
-                    "space" => {
+                    "enter" | "space" => {
                         let sid = this.selected_id.clone();
                         if let Some(sid) = sid {
-                            let is_folder = this
-                                .flat_items(cx)
-                                .iter()
-                                .any(|f| f.id == sid && f.is_folder);
-                            if is_folder {
-                                if this.expanded.contains(&sid) {
-                                    this.expanded.remove(&sid);
+                            let flat = this.flat_items(cx);
+                            if let Some(item) = flat.iter().find(|f| f.id == sid) {
+                                if item.is_folder {
+                                    if this.expanded.contains(&sid) {
+                                        this.expanded.remove(&sid);
+                                    } else {
+                                        this.expanded.insert(sid.clone());
+                                    }
+                                    this.flat_dirty = true;
+                                    cx.notify();
                                 } else {
-                                    this.expanded.insert(sid.clone());
+                                    this.app_state.update(cx, |state, cx| {
+                                        if state.select_request(&sid) {
+                                            cx.emit(AppEvent::RequestSelected);
+                                        }
+                                    });
                                 }
-                                this.flat_dirty = true;
-                                cx.notify();
                             }
                         }
                     }

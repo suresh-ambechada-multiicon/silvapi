@@ -1,9 +1,13 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context as _;
+#[cfg(not(target_arch = "wasm32"))]
 use rusqlite::{Connection, params};
 
 use silvapi_core::models::{HttpResponse, Workspace};
@@ -12,7 +16,11 @@ const DB_FILE: &str = "silvapi.sqlite";
 const MAX_RESPONSE_HISTORY_PER_REQUEST: i64 = 20;
 const IN_MEMORY_RESPONSE_HISTORY_PER_REQUEST: i64 = 5;
 
-pub fn load_workspace() -> Result<Option<Workspace>> {
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use super::*;
+
+    pub fn load_workspace() -> Result<Option<Workspace>> {
     let path = db_path()?;
     if !path.exists() {
         return Ok(None);
@@ -239,10 +247,110 @@ fn save_response_cache(
     Ok(())
 }
 
-fn db_path() -> Result<PathBuf> {
-    let base = env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .context("HOME is not set")?;
-    Ok(base.join("silvapi").join(DB_FILE))
+    fn db_path() -> Result<PathBuf> {
+        let base = env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .context("HOME is not set")?;
+        Ok(base.join("silvapi").join(DB_FILE))
+    }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::*;
+
+#[cfg(target_arch = "wasm32")]
+mod web_storage {
+    use super::*;
+    use std::sync::Mutex;
+    use std::collections::HashMap;
+
+    static WORKSPACE_STATE: Mutex<Option<Workspace>> = Mutex::new(None);
+    static SETTINGS_STATE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    static HISTORY_STATE: Mutex<Option<HashMap<String, Vec<HttpResponse>>>> = Mutex::new(None);
+
+    pub fn load_workspace() -> Result<Option<Workspace>> {
+        let state = WORKSPACE_STATE.lock().unwrap();
+        if state.is_none() {
+            return Ok(None);
+        }
+        let mut ws = state.clone().unwrap();
+        // Load history into response_cache
+        let history = HISTORY_STATE.lock().unwrap();
+        if let Some(ref h) = *history {
+            ws.response_cache = h.clone();
+        }
+        Ok(Some(ws))
+    }
+
+    pub fn save_workspace(workspace: &Workspace) -> Result<()> {
+        let mut state = WORKSPACE_STATE.lock().unwrap();
+        let mut ws = workspace.clone();
+        // Save response history from response_cache
+        let mut history = HISTORY_STATE.lock().unwrap();
+        if history.is_none() {
+            *history = Some(HashMap::new());
+        }
+        if let Some(ref mut h) = *history {
+            *h = ws.response_cache.clone();
+        }
+        ws.response_cache.clear();
+        *state = Some(ws);
+        Ok(())
+    }
+
+    pub fn append_response(request_id: &str, response: &HttpResponse) -> Result<()> {
+        let mut history = HISTORY_STATE.lock().unwrap();
+        if history.is_none() {
+            *history = Some(HashMap::new());
+        }
+        if let Some(ref mut h) = *history {
+            let list = h.entry(request_id.to_string()).or_default();
+            list.push(response.clone());
+            if list.len() > MAX_RESPONSE_HISTORY_PER_REQUEST as usize {
+                list.remove(0);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete_response_history(request_id: &str) -> Result<()> {
+        let mut history = HISTORY_STATE.lock().unwrap();
+        if let Some(ref mut h) = *history {
+            h.remove(request_id);
+        }
+        Ok(())
+    }
+
+    pub fn load_theme_name() -> Result<Option<String>> {
+        load_setting("theme")
+    }
+
+    pub fn save_theme_name(theme_name: &str) -> Result<()> {
+        save_setting("theme", theme_name)
+    }
+
+    pub fn load_setting(key: &str) -> Result<Option<String>> {
+        let settings = SETTINGS_STATE.lock().unwrap();
+        if let Some(ref s) = *settings {
+            Ok(s.get(key).cloned())
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn save_setting(key: &str, value: &str) -> Result<()> {
+        let mut settings = SETTINGS_STATE.lock().unwrap();
+        if settings.is_none() {
+            *settings = Some(HashMap::new());
+        }
+        if let Some(ref mut s) = *settings {
+            s.insert(key.to_string(), value.to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub use web_storage::*;
+

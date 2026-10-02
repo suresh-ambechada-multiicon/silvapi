@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     resizable::{ResizableState, resizable_panel, v_resizable},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
@@ -18,9 +18,7 @@ use gpui_component::{
 use crate::state::{AppEvent, AppState};
 use json_table::JsonTableDelegate;
 
-const STREAM_PREVIEW_BYTES: usize = 96 * 1024;
-const LARGE_RESPONSE_PREVIEW_BYTES: usize = 128 * 1024;
-const FORMAT_RESPONSE_LIMIT_BYTES: usize = 1024 * 1024;
+const FORMAT_RESPONSE_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 const SSE_ROW_PREVIEW_BYTES: usize = 512;
 const SSE_MAX_EVENTS: usize = 2_000;
 const SSE_EVENT_STORE_BYTES: usize = 256 * 1024;
@@ -144,9 +142,9 @@ impl ResponseTab {
 pub struct ResponsePanel {
     app_state: Entity<AppState>,
     active_tab: ResponseTab,
-    response_editor: Entity<InputState>,
-    sse_detail_editor: Entity<InputState>,
-    headers_editor: Entity<InputState>,
+    response_editor: Entity<EditorState>,
+    sse_detail_editor: Entity<EditorState>,
+    headers_editor: Entity<EditorState>,
     table_search_input: Entity<InputState>,
     response_text: String,
     soft_wrap: bool,
@@ -171,8 +169,8 @@ pub struct ResponsePanel {
     selected_timeline_event: Option<usize>,
     selected_sse_event: Option<usize>,
     focus_handle: FocusHandle,
-    sse_scroll: gpui::UniformListScrollHandle,
-    timeline_scroll: gpui::UniformListScrollHandle,
+    sse_scroll: gpui_kit::UniformListScrollHandle,
+    timeline_scroll: gpui_kit::UniformListScrollHandle,
     sse_detail_column_resize: Entity<ResizableState>,
     sse_detail_row_resize: Entity<ResizableState>,
 }
@@ -192,31 +190,19 @@ mod timeline;
 impl ResponsePanel {
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let response_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
-                .searchable(true)
-                .replaceable(false)
+            EditorState::new(window, cx)
+                .language("json")
+                .line_number(true)
+                .folding(true)
                 .placeholder("Response will appear here... (Ctrl+F to search)")
-                .soft_wrap(true)
         });
         let sse_detail_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
-                .searchable(true)
-                .replaceable(false)
+            EditorState::new(window, cx)
                 .placeholder("Message detail")
-                .soft_wrap(true)
         });
         let headers_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("http")
-                .searchable(true)
-                .replaceable(false)
+            EditorState::new(window, cx)
                 .placeholder("Headers")
-                .soft_wrap(false)
         });
         let table_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search table..."));
@@ -247,8 +233,8 @@ impl ResponsePanel {
             selected_timeline_event: None,
             selected_sse_event: None,
             focus_handle,
-            sse_scroll: gpui::UniformListScrollHandle::new(),
-            timeline_scroll: gpui::UniformListScrollHandle::new(),
+            sse_scroll: gpui_kit::UniformListScrollHandle::new(),
+            timeline_scroll: gpui_kit::UniformListScrollHandle::new(),
             sse_detail_column_resize: cx.new(|_| ResizableState::default()),
             sse_detail_row_resize: cx.new(|_| ResizableState::default()),
         };
@@ -261,31 +247,59 @@ impl ResponsePanel {
                     cx.notify();
                 }
 
+                if let AppEvent::StreamChunk(chunk) = ev {
+                    this.response_text.push_str(chunk);
+                    this.response_editor.update(cx, |state, cx| {
+                        state.insert(chunk.clone(), window, cx);
+                    });
+                    cx.notify();
+                }
+
                 if matches!(ev, AppEvent::ResponseReceived | AppEvent::RequestSelected) {
-                    let (is_loading, body_len, preview_text) = {
+                    let (is_loading, body_len, body_text, existing_formatted) = {
                         let state = app_state.read(cx);
                         let body = state
                             .response
                             .as_ref()
                             .map(|r| r.body.as_str())
                             .unwrap_or("");
+                        let fmt = state
+                            .formatted_response
+                            .clone()
+                            .or_else(|| state.response.as_ref().and_then(|r| r.formatted_body.clone()));
                         (
                             state.is_loading,
                             body.len(),
-                            response_preview_text(body, state.is_loading),
+                            body.to_string(),
+                            fmt,
                         )
                     };
 
-                    if !is_loading {
-                        this.rebuild_json_table(window, cx);
-                        if body_len <= FORMAT_RESPONSE_LIMIT_BYTES {
-                            this.ensure_response_editor_mode(false, window, cx);
-                            let text = app_state
-                                .read(cx)
-                                .response
-                                .as_ref()
-                                .map(|r| r.body.clone())
-                                .unwrap_or_default();
+                    if is_loading {
+                        // While response is streaming: do not format it at all.
+                        // Keep plain editor mode so chunks stream raw and smoothly.
+                        this.ensure_response_editor_mode(true, window, cx);
+                        this.response_text.clear();
+                        this.response_editor.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                        cx.notify();
+                    } else {
+                        // Entire response is finished.
+                        this.json_table = None;
+                        this.json_table_sub = None;
+                        this.ensure_response_editor_mode(false, window, cx);
+
+                        let text_to_display = existing_formatted.as_deref().unwrap_or(&body_text);
+                        let editor_empty = this.response_editor.read(cx).value().is_empty();
+                        if this.response_text != text_to_display || (editor_empty && !text_to_display.is_empty()) {
+                            this.response_text = text_to_display.to_string();
+                            this.set_response_text(text_to_display.to_string(), window, cx);
+                        }
+
+                        // Only format if not already formatted and under size limit
+                        if existing_formatted.is_none() && body_len > 0 && body_len <= FORMAT_RESPONSE_LIMIT_BYTES {
+                            let text = body_text.clone();
                             let app_state_clone = app_state.clone();
                             cx.spawn(async move |_, cx| {
                                 let formatted = cx
@@ -294,34 +308,37 @@ impl ResponsePanel {
                                     .await;
                                 let _ = cx.update(|cx| {
                                     app_state_clone.update(cx, |state, cx| {
+                                        if let Some(resp) = &mut state.response {
+                                            resp.formatted_body = Some(formatted.clone());
+                                        }
+                                        if let Some(req_id) = &state.active_request_id {
+                                            if let Some(history) = state.workspace.response_cache.get_mut(req_id) {
+                                                if let Some(last) = history.last_mut() {
+                                                    last.formatted_body = Some(formatted.clone());
+                                                }
+                                            }
+                                        }
                                         state.formatted_response = Some(formatted);
                                         cx.emit(AppEvent::ResponseFormatted);
                                     });
                                 });
                             })
                             .detach();
-                        } else {
-                            this.ensure_response_editor_mode(true, window, cx);
-                            this.response_text = preview_text.clone();
-                            this.set_response_text(preview_text, window, cx);
-                            cx.notify();
                         }
-                    } else {
-                        this.ensure_response_editor_mode(true, window, cx);
-                        this.response_text = preview_text.clone();
-                        this.response_editor.update(cx, |state, cx| {
-                            state.set_value(preview_text, window, cx);
-                        });
                         cx.notify();
                     }
                 }
 
                 if matches!(ev, AppEvent::ResponseFormatted) {
-                    if let Some(formatted) = app_state.read(cx).formatted_response.clone() {
-                        this.ensure_response_editor_mode(false, window, cx);
-                        this.response_text = formatted.clone();
-                        this.set_response_text(formatted, window, cx);
-                        cx.notify();
+                    let state = app_state.read(cx);
+                    if !state.is_loading {
+                        if let Some(formatted) = state.formatted_response.clone() {
+                            if this.response_text != formatted {
+                                this.response_text = formatted.clone();
+                                this.set_response_text(formatted, window, cx);
+                                cx.notify();
+                            }
+                        }
                     }
                 }
             },
@@ -425,7 +442,12 @@ impl Render for ResponsePanel {
                     .iter()
                     .any(|(k, v)| k.to_lowercase() == "content-type" && v.contains("text/html"))
             });
-        let has_json_table = self.json_table.is_some();
+        let has_json_table = self.app_state.read(cx).response.as_ref().map_or(false, |r| {
+            let b = r.body.trim_start();
+            b.len() <= FORMAT_RESPONSE_LIMIT_BYTES
+                && ((b.starts_with('{') && b.ends_with('}'))
+                    || (b.starts_with('[') && b.ends_with(']')))
+        });
 
         let mut visible_tabs = vec![ResponseTab::Response];
         if has_json_table {
@@ -458,6 +480,11 @@ impl Render for ResponsePanel {
             .child(self.render_status_bar(cx))
             .child({
                 let mut tab_bar = TabBar::new("resp-tabs")
+                    .underline()
+                    .small()
+                    .px_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .selected_index(selected_index)
                     .on_click(cx.listener({
                         let visible_tabs = visible_tabs.clone();
@@ -497,15 +524,11 @@ impl Render for ResponsePanel {
                                 div()
                                     .size_full()
                                     .p_4()
+                                    .text_sm()
+                                    .text_color(cx.theme().danger)
                                     .id("error-scroll")
                                     .overflow_y_scrollbar()
-                                    .child(
-                                        TextView::markdown(
-                                            "error-view",
-                                            format!("### Network Error\n\n```text\n{}\n```", err),
-                                        )
-                                        .selectable(true),
-                                    ),
+                                    .child(err.clone()),
                             )
                         } else if {
                             let state = self.app_state.read(cx);
@@ -537,7 +560,15 @@ impl Render for ResponsePanel {
                                         .flex_1()
                                         .size_full()
                                         .p_1()
-                                        .child(Input::new(&self.response_editor).h_full().w_full()),
+                                        .child(
+                                            Editor::new(&self.response_editor)
+                                                .text_size(cx.theme().font_size)
+                                                .h(relative(1.0))
+                                                .bordered(false)
+                                                .appearance(false)
+                                                .readonly(true)
+                                                .context_menu(crate::ui::editor_utils::readonly_editor_context_menu),
+                                        ),
                                 )
                             }
                         }
@@ -546,7 +577,7 @@ impl Render for ResponsePanel {
                         el.child(self.render_preview_tab(cx))
                     })
                     .when(active_tab == ResponseTab::Table, |el| {
-                        match self.render_json_table_tab(cx) {
+                        match self.render_json_table_tab(_window, cx) {
                             Some(table) => el.child(table),
                             None => el,
                         }
@@ -563,9 +594,11 @@ impl Render for ResponsePanel {
 
 impl ResponsePanel {
     fn current_json_value(&self, cx: &App) -> Option<serde_json::Value> {
-        let body = self
-            .app_state
-            .read(cx)
+        let state = self.app_state.read(cx);
+        if state.is_loading {
+            return None;
+        }
+        let body = state
             .response
             .as_ref()
             .map(|response| response.body.trim().to_string())?;
@@ -615,7 +648,10 @@ impl ResponsePanel {
             .is_some_and(|table| table.read(cx).selected_cell().is_some())
     }
 
-    fn render_json_table_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_json_table_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.json_table.is_none() {
+            self.rebuild_json_table(window, cx);
+        }
         let table = self.json_table.clone()?;
         let grid = div().size_full().min_h(px(0.)).p_1().child(
             // Stripes off: the table pads its viewport with blank filler rows,
@@ -1126,40 +1162,6 @@ fn push_header_line(out: &mut String, key: &str, value: &str) {
     let _ = writeln!(out, "{}: {}", key, value);
 }
 
-fn response_preview_text(body: &str, is_loading: bool) -> String {
-    let limit = if is_loading {
-        STREAM_PREVIEW_BYTES
-    } else {
-        LARGE_RESPONSE_PREVIEW_BYTES
-    };
-
-    if body.len() <= limit {
-        return body.to_string();
-    }
-
-    if is_loading {
-        let tail = tail_on_char_boundary(body, limit);
-        format!(
-            "[Streaming response: showing last {} of {} bytes]\n\n{}",
-            tail.len(),
-            body.len(),
-            tail
-        )
-    } else {
-        let half = limit / 2;
-        let head = head_on_char_boundary(body, half);
-        let tail = tail_on_char_boundary(body, half);
-        format!(
-            "[Large response: showing first {} and last {} of {} bytes]\n\n{}\n\n... omitted {} bytes ...\n\n{}",
-            head.len(),
-            tail.len(),
-            body.len(),
-            head,
-            body.len().saturating_sub(head.len() + tail.len()),
-            tail
-        )
-    }
-}
 
 /// Prepare an HTML body for the lightweight `TextView::html` renderer:
 /// remove elements it can't meaningfully render (whose raw source would
@@ -1245,16 +1247,6 @@ fn head_on_char_boundary(value: &str, max_bytes: usize) -> &str {
     &value[..end]
 }
 
-fn tail_on_char_boundary(value: &str, max_bytes: usize) -> &str {
-    if value.len() <= max_bytes {
-        return value;
-    }
-    let mut start = value.len().saturating_sub(max_bytes);
-    while start < value.len() && !value.is_char_boundary(start) {
-        start += 1;
-    }
-    &value[start..]
-}
 
 fn single_line_preview(value: &str, max_bytes: usize) -> String {
     let mut preview = head_on_char_boundary(value, max_bytes)

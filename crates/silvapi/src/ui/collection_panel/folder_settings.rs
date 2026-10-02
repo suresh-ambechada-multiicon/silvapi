@@ -1,9 +1,9 @@
 #![allow(unused_imports)]
 use std::{collections::HashSet, ops::Range};
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
@@ -48,8 +48,6 @@ impl CollectionPanel {
             jwt_secret: Self::new_auth_input(window, cx, "Secret or private key"),
             jwt_payload: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .multi_line(true)
-                    .code_editor("json")
                     .placeholder("Payload")
             }),
             oauth_client_id: Self::new_auth_input(window, cx, "Client ID"),
@@ -118,6 +116,7 @@ impl CollectionPanel {
         });
         let auth = self.current_folder_auth(cx);
         self.load_folder_auth_inputs(&auth, window, cx);
+        self.sync_folder_selects(&auth, window, cx);
         cx.notify();
     }
 
@@ -341,6 +340,7 @@ impl CollectionPanel {
         self.folder_auth_enabled = folder.auth.enabled;
         self.folder_auth_type = folder.auth.auth_type.clone();
         self.load_folder_auth_inputs(&folder.auth, window, cx);
+        self.sync_folder_selects(&folder.auth, window, cx);
         self.folder_name_input.update(cx, |state, cx| {
             state.set_value(folder.name.clone(), window, cx);
         });
@@ -530,89 +530,8 @@ impl CollectionPanel {
             .border_color(cx.theme().border)
             .child(self.render_folder_settings_tab("General", FolderSettingsTab::General, cx))
             .child(self.render_folder_settings_tab("Headers", FolderSettingsTab::Headers, cx))
-            .child(self.render_folder_auth_dropdown(cx))
+            .child(self.render_folder_settings_tab("Auth", FolderSettingsTab::Auth, cx))
             .child(self.render_folder_settings_tab("Variables", FolderSettingsTab::Variables, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn folder_auth_label(enabled: bool, auth_type: &AuthType) -> &'static str {
-        if !enabled {
-            return "Inherit from Parent";
-        }
-        match auth_type {
-            AuthType::None => "No Auth",
-            AuthType::ApiKey => "API Key",
-            AuthType::AwsV4 => "AWS Signature",
-            AuthType::Basic => "Basic Auth",
-            AuthType::Bearer => "Bearer Token",
-            AuthType::Jwt => "JWT Bearer",
-            AuthType::OAuth2 => "OAuth 2.0",
-        }
-    }
-
-    pub(super) fn folder_auth_short_label(enabled: bool, auth_type: &AuthType) -> &'static str {
-        if !enabled {
-            return "Inherit";
-        }
-        match auth_type {
-            AuthType::None => "No Auth",
-            AuthType::ApiKey => "API Key",
-            AuthType::AwsV4 => "AWS v4",
-            AuthType::Basic => "Basic",
-            AuthType::Bearer => "Bearer",
-            AuthType::Jwt => "JWT",
-            AuthType::OAuth2 => "OAuth 2",
-        }
-    }
-
-    pub(super) fn render_folder_auth_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.folder_settings_tab == FolderSettingsTab::Auth;
-        let label = Self::folder_auth_short_label(self.folder_auth_enabled, &self.folder_auth_type);
-        let cur_enabled = self.folder_auth_enabled;
-        let cur_type = self.folder_auth_type.clone();
-        let entity = cx.entity();
-
-        let item = move |menu_label: &'static str, enabled: bool, auth_type: AuthType| {
-            let selected = cur_enabled == enabled && cur_type == auth_type;
-            let entity = entity.clone();
-            PopupMenuItem::new(menu_label)
-                .checked(selected)
-                .on_click(move |_, window, cx| {
-                    let auth_type = auth_type.clone();
-                    entity.update(cx, |this, cx| {
-                        this.set_folder_auth(enabled, auth_type, window, cx);
-                    });
-                })
-        };
-
-        div()
-            .w_full()
-            .overflow_hidden()
-            .child(
-                DropdownButton::new("folder-auth-dropdown")
-                    .button(
-                        Button::new("folder-auth-btn")
-                            .label(label)
-                            .ghost()
-                            .small()
-                            .when(active, |b| b.primary())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.folder_settings_tab = FolderSettingsTab::Auth;
-                                cx.notify();
-                            })),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        menu.item(item("API Key", true, AuthType::ApiKey))
-                            .item(item("AWS Signature", true, AuthType::AwsV4))
-                            .item(item("Basic Auth", true, AuthType::Basic))
-                            .item(item("Bearer Token", true, AuthType::Bearer))
-                            .item(item("JWT Bearer", true, AuthType::Jwt))
-                            .item(item("OAuth 2.0", true, AuthType::OAuth2))
-                            .separator()
-                            .item(item("Inherit from Parent", false, AuthType::None))
-                            .item(item("No Auth", true, AuthType::None))
-                    }),
-            )
             .into_any_element()
     }
 
@@ -788,19 +707,13 @@ impl CollectionPanel {
             .w_full()
             .gap_3()
             .child(label_text("Authentication", cx))
-            .child(
-                h_flex()
-                    .h(px(34.))
-                    .px_3()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().primary)
-                    .bg(cx.theme().primary.opacity(0.1))
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .child(Self::folder_auth_label(enabled, &auth_type)),
-            )
+            .child(folder_auth_select_field(
+                "Type",
+                div()
+                    .w(px(220.))
+                    .child(Select::new(&self.folder_auth_type_select).small()),
+                cx,
+            ))
             .child(
                 h_flex()
                     .items_center()
@@ -808,11 +721,13 @@ impl CollectionPanel {
                     .child(
                         Checkbox::new("folder-auth-enabled")
                             .checked(enabled)
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            .on_click(cx.listener(|this, checked: &bool, window, cx| {
                                 this.folder_auth_enabled = *checked;
                                 this.update_folder_auth(cx, |auth| {
                                     auth.enabled = *checked;
                                 });
+                                let auth = this.current_folder_auth(cx);
+                                this.sync_folder_selects(&auth, window, cx);
                                 cx.notify();
                             })),
                     )
@@ -863,49 +778,13 @@ impl CollectionPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let api_key_in_header = auth.api_key_in_header;
-        let behavior_label = if api_key_in_header {
-            "Insert Header"
-        } else {
-            "Insert Query Param"
-        };
-        let entity = cx.entity();
         v_flex()
             .gap_3()
             .child(folder_auth_select_field(
                 "Behavior",
-                DropdownButton::new("folder-api-key-behavior")
-                    .button(
-                        Button::new("folder-api-key-behavior-btn")
-                            .label(behavior_label)
-                            .ghost()
-                            .small(),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        let header_entity = entity.clone();
-                        let query_entity = entity.clone();
-                        menu.item(
-                            PopupMenuItem::new("Insert Header")
-                                .checked(api_key_in_header)
-                                .on_click(move |_, _, cx| {
-                                    header_entity.update(cx, |this, cx| {
-                                        this.update_folder_auth(cx, |auth| {
-                                            auth.api_key_in_header = true;
-                                        });
-                                    });
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new("Insert Query Param")
-                                .checked(!api_key_in_header)
-                                .on_click(move |_, _, cx| {
-                                    query_entity.update(cx, |this, cx| {
-                                        this.update_folder_auth(cx, |auth| {
-                                            auth.api_key_in_header = false;
-                                        });
-                                    });
-                                }),
-                        )
-                    }),
+                div()
+                    .w(px(160.))
+                    .child(Select::new(&self.folder_api_key_placement_select).small()),
                 cx,
             ))
             .child(folder_auth_input_field(
@@ -989,41 +868,15 @@ impl CollectionPanel {
         auth: &AuthConfig,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let entity = cx.entity();
-        let current_algorithm = auth.jwt_algorithm.clone();
         v_flex()
             .gap_3()
-            .child(
-                DropdownButton::new("folder-jwt-algorithm")
-                    .button(
-                        Button::new("folder-jwt-algorithm-btn")
-                            .label(if auth.jwt_algorithm.is_empty() {
-                                "HS256"
-                            } else {
-                                auth.jwt_algorithm.as_str()
-                            })
-                            .ghost()
-                            .small(),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        ["HS256", "HS384", "HS512", "RS256", "RS384", "RS512"]
-                            .into_iter()
-                            .fold(menu, |menu, algorithm| {
-                                let entity = entity.clone();
-                                menu.item(
-                                    PopupMenuItem::new(algorithm)
-                                        .checked(current_algorithm == algorithm)
-                                        .on_click(move |_, _, cx| {
-                                            entity.update(cx, |this, cx| {
-                                                this.update_folder_auth(cx, |auth| {
-                                                    auth.jwt_algorithm = algorithm.to_string();
-                                                });
-                                            });
-                                        }),
-                                )
-                            })
-                    }),
-            )
+            .child(folder_auth_select_field(
+                "Algorithm",
+                div()
+                    .w(px(120.))
+                    .child(Select::new(&self.folder_jwt_alg_select).small()),
+                cx,
+            ))
             .child(folder_auth_input_field(
                 "Secret or Private Key",
                 &self.folder_auth_inputs.jwt_secret,
@@ -1064,7 +917,13 @@ impl CollectionPanel {
 
         v_flex()
             .gap_3()
-            .child(self.folder_oauth_grant_dropdown(&auth.oauth_grant_type, cx))
+            .child(folder_auth_select_field(
+                "Grant Type",
+                div()
+                    .w(px(220.))
+                    .child(Select::new(&self.folder_oauth_grant_select).small()),
+                cx,
+            ))
             .when(is_authorization_code, |el| {
                 el.child(folder_auth_input_field(
                     "Client ID",
@@ -1103,7 +962,9 @@ impl CollectionPanel {
                 ))
                 .child(folder_auth_select_field(
                     "Token for authorization",
-                    self.folder_oauth_token_target_dropdown(auth, cx),
+                    div()
+                        .w(px(140.))
+                        .child(Select::new(&self.folder_oauth_token_target_select).small()),
                     cx,
                 ))
                 .child(self.folder_oauth_pkce_checkbox(auth, cx))
@@ -1136,12 +997,16 @@ impl CollectionPanel {
                 ))
                 .child(folder_auth_select_field(
                     "Token for authorization",
-                    self.folder_oauth_token_target_dropdown(auth, cx),
+                    div()
+                        .w(px(140.))
+                        .child(Select::new(&self.folder_oauth_token_target_select).small()),
                     cx,
                 ))
                 .child(folder_auth_select_field(
                     "Response Type",
-                    self.folder_oauth_response_type_dropdown(auth, cx),
+                    div()
+                        .w(px(220.))
+                        .child(Select::new(&self.folder_oauth_response_type_select).small()),
                     cx,
                 ))
             })
@@ -1202,145 +1067,6 @@ impl CollectionPanel {
             .child(self.render_folder_oauth_advanced(auth, cx))
     }
 
-    pub(super) fn folder_oauth_grant_dropdown(
-        &self,
-        current: &str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let current = folder_oauth_grant_label(current);
-        let entity = cx.entity();
-        let item = move |grant: &'static str| {
-            let entity = entity.clone();
-            PopupMenuItem::new(grant)
-                .checked(current == grant)
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.update_folder_auth(cx, |auth| {
-                            auth.oauth_grant_type = grant.to_string();
-                        });
-                    });
-                })
-        };
-        DropdownButton::new("folder-oauth-grant")
-            .button(
-                Button::new("folder-oauth-grant-btn")
-                    .label(current)
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                menu.item(item("Authorization Code"))
-                    .item(item("Implicit"))
-                    .item(item("Resource Owner Password Credential"))
-                    .item(item("Client Credentials"))
-            })
-    }
-
-    pub(super) fn folder_oauth_token_target_dropdown(
-        &self,
-        auth: &AuthConfig,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let current = folder_default_if_empty(&auth.oauth_token_target, "access_token");
-        let entity = cx.entity();
-        DropdownButton::new("folder-oauth-token-target")
-            .button(
-                Button::new("folder-oauth-token-target-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["access_token", "id_token"]
-                    .into_iter()
-                    .fold(menu, |menu, token| {
-                        let entity = entity.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(token)
-                                .checked(current == token)
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.update_folder_auth(cx, |auth| {
-                                            auth.oauth_token_target = token.to_string();
-                                        });
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
-    pub(super) fn folder_oauth_response_type_dropdown(
-        &self,
-        auth: &AuthConfig,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let current = folder_default_if_empty(&auth.oauth_response_type, "Access Token");
-        let entity = cx.entity();
-        DropdownButton::new("folder-oauth-response-type")
-            .button(
-                Button::new("folder-oauth-response-type-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["Access Token", "ID Token", "Access Token + ID Token"]
-                    .into_iter()
-                    .fold(menu, |menu, response_type| {
-                        let entity = entity.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(response_type)
-                                .checked(current == response_type)
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.update_folder_auth(cx, |auth| {
-                                            auth.oauth_response_type = response_type.to_string();
-                                        });
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
-    pub(super) fn folder_oauth_send_credentials_dropdown(
-        &self,
-        auth: &AuthConfig,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let current = folder_default_if_empty(&auth.oauth_send_credentials, "In Request Body");
-        let entity = cx.entity();
-        DropdownButton::new("folder-oauth-send-credentials")
-            .button(
-                Button::new("folder-oauth-send-credentials-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["In Request Body", "As Basic Authentication"]
-                    .into_iter()
-                    .fold(menu, |menu, target| {
-                        let entity = entity.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(target)
-                                .checked(current == target)
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.update_folder_auth(cx, |auth| {
-                                            auth.oauth_send_credentials = target.to_string();
-                                        });
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
     pub(super) fn folder_oauth_pkce_checkbox(
         &self,
         auth: &AuthConfig,
@@ -1363,7 +1089,7 @@ impl CollectionPanel {
 
     pub(super) fn render_folder_oauth_advanced(
         &self,
-        auth: &AuthConfig,
+        _auth: &AuthConfig,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
@@ -1390,7 +1116,9 @@ impl CollectionPanel {
             ))
             .child(folder_auth_select_field(
                 "Send Credentials",
-                self.folder_oauth_send_credentials_dropdown(auth, cx),
+                div()
+                    .w(px(200.))
+                    .child(Select::new(&self.folder_oauth_send_credentials_select).small()),
                 cx,
             ))
     }

@@ -1,0 +1,26 @@
+{
+  "download": {
+    "yt_dlp_path": "yt-dlp",
+    "ffmpeg_path": null,
+    "output_directory": "downloads",
+    "media_kind": "video",
+    "video_container": "mp4",
+    "audio_format": "mp3",
+    "selected_format_id": null,
+    "resolution": 1080,
+    "download_playlist": true,
+    "playlist_workers": 4,
+    "concurrent_fragments": 8,
+    "retries": 10,
+    "embed_metadata": true,
+    "embed_thumbnail": true,
+    "download_subtitles": false,
+    "use_download_archive": true
+  },
+  "video_containers": ["mp4", "mkv", "webm"],
+  "audio_formats": ["mp3", "m4a", "opus", "flac", "wav"],
+  "resolutions": [2160, 1440, 1080, 720, 480, 360],
+  "worker_options": [1, 2, 4, 8, 16],
+  "fragment_options": [1, 2, 4, 8, 16, 32],
+  "retry_options": [3, 5, 10, 20]
+}

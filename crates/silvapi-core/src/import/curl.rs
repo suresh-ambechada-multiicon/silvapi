@@ -38,32 +38,74 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
                 i += 1;
                 if let Some(header) = tokens.get(i) {
                     if let Some((k, v)) = header.split_once(':') {
-                        let kv = KeyValue::new(k.trim(), v.trim());
-                        if k.trim().to_lowercase() == "authorization" {
-                            let v = v.trim();
+                        let k = k.trim();
+                        let v = v.trim();
+                        if k.eq_ignore_ascii_case("authorization") {
                             if let Some(token) = v.strip_prefix("Bearer ") {
                                 req.auth.auth_type = AuthType::Bearer;
-                                req.auth.bearer_token = token.to_string();
+                                req.auth.bearer_token = token.trim().to_string();
+                            } else if let Some(basic) = v.strip_prefix("Basic ") {
+                                req.auth.auth_type = AuthType::Basic;
+                                if let Ok(decoded) = base64::Engine::decode(
+                                    &base64::engine::general_purpose::STANDARD,
+                                    basic.trim(),
+                                ) {
+                                    if let Ok(s) = String::from_utf8(decoded) {
+                                        if let Some((user, pass)) = s.split_once(':') {
+                                            req.auth.basic_username = user.to_string();
+                                            req.auth.basic_password = pass.to_string();
+                                        }
+                                    }
+                                }
+                            } else {
+                                req.headers.push(KeyValue::new(k, v));
                             }
                         } else {
-                            req.headers.push(kv);
+                            req.headers.push(KeyValue::new(k, v));
                         }
                     }
                 }
             }
-            "-d" | "--data" | "--data-raw" | "--data-binary" => {
+            "--json" => {
+                i += 1;
+                if let Some(data) = tokens.get(i) {
+                    req.body.content = data.to_string();
+                    req.body.body_type = BodyType::Json;
+                    if req.method == HttpMethod::GET {
+                        req.method = HttpMethod::POST;
+                    }
+                    if !req
+                        .headers
+                        .iter()
+                        .any(|h| h.key.eq_ignore_ascii_case("content-type"))
+                    {
+                        req.headers
+                            .push(KeyValue::new("Content-Type", "application/json"));
+                    }
+                    if !req.headers.iter().any(|h| h.key.eq_ignore_ascii_case("accept")) {
+                        req.headers
+                            .push(KeyValue::new("Accept", "application/json"));
+                    }
+                }
+            }
+            "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-ascii" => {
                 i += 1;
                 if let Some(data) = tokens.get(i) {
                     let data = data.strip_prefix('@').unwrap_or(data);
-                    req.body.content = data.to_string();
+                    if req.body.content.is_empty() {
+                        req.body.content = data.to_string();
+                    } else {
+                        req.body.content.push('&');
+                        req.body.content.push_str(data);
+                    }
                     req.body.body_type = BodyType::Raw;
                     // detect json
-                    let trimmed = data.trim();
+                    let trimmed = req.body.content.trim();
                     if trimmed.starts_with('{') || trimmed.starts_with('[') {
                         req.body.body_type = BodyType::Json;
-                        if req.method == HttpMethod::GET {
-                            req.method = HttpMethod::POST;
-                        }
+                    }
+                    if req.method == HttpMethod::GET {
+                        req.method = HttpMethod::POST;
                     }
                 }
             }
@@ -95,8 +137,32 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
                         req.auth.auth_type = AuthType::Basic;
                         req.auth.basic_username = user.to_string();
                         req.auth.basic_password = pass.to_string();
+                    } else {
+                        req.auth.auth_type = AuthType::Basic;
+                        req.auth.basic_username = creds.to_string();
                     }
                 }
+            }
+            "-b" | "--cookie" => {
+                i += 1;
+                if let Some(cookie) = tokens.get(i) {
+                    req.headers.push(KeyValue::new("Cookie", cookie));
+                }
+            }
+            "-A" | "--user-agent" => {
+                i += 1;
+                if let Some(agent) = tokens.get(i) {
+                    req.headers.push(KeyValue::new("User-Agent", agent));
+                }
+            }
+            "-e" | "--referer" => {
+                i += 1;
+                if let Some(referer) = tokens.get(i) {
+                    req.headers.push(KeyValue::new("Referer", referer));
+                }
+            }
+            "-I" | "--head" => {
+                req.method = HttpMethod::HEAD;
             }
             "--url" => {
                 i += 1;
@@ -107,8 +173,26 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
             "-G" | "--get" => {
                 req.method = HttpMethod::GET;
             }
+            // Flags that take an argument to skip
+            "-o" | "--output" | "-m" | "--max-time" | "--connect-timeout" | "--cacert"
+            | "--capath" | "--cert" | "--key" | "-x" | "--proxy" | "-U" | "--proxy-user"
+            | "-c" | "--cookie-jar" | "--resolve" | "--retry" => {
+                i += 1;
+            }
+            // Known boolean flags without arguments
+            "-k" | "--insecure" | "-s" | "--silent" | "-S" | "--show-error" | "-L"
+            | "--location" | "-v" | "--verbose" | "-i" | "--include" | "--compressed" | "-f"
+            | "--fail" | "-N" | "--no-buffer" | "-g" | "--globoff" | "-4" | "-6" => {}
             s if !s.starts_with('-') && req.url.is_empty() => {
                 parse_url_into(&mut req, s);
+            }
+            s if s.starts_with('-') => {
+                // If an unknown flag takes an argument, avoid consuming it as URL
+                if let Some(next) = tokens.get(i + 1) {
+                    if !next.starts_with('-') && !is_likely_url(next) {
+                        i += 1;
+                    }
+                }
             }
             _ => {}
         }
@@ -123,6 +207,15 @@ pub fn parse_curl(input: &str) -> Result<ApiRequest, String> {
     req.name = url_to_name(&req.url);
 
     Ok(req)
+}
+
+fn is_likely_url(s: &str) -> bool {
+    s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("localhost")
+        || s.starts_with("127.0.0.1")
+        || s.starts_with("::1")
+        || (s.contains("://"))
 }
 
 fn parse_url_into(req: &mut ApiRequest, url: &str) {
@@ -257,7 +350,13 @@ fn tokenize(input: &str) -> Vec<String> {
                 current.clear();
             }
             '\\' if !in_single && !in_double => {
-                // line continuation
+                // line continuation: consume optional trailing spaces and \r\n or \n
+                while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'\r') {
+                    chars.next();
+                }
                 if chars.peek() == Some(&'\n') {
                     chars.next();
                 }

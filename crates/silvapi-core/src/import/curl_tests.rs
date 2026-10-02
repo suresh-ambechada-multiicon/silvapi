@@ -95,3 +95,39 @@ fn imports_multipart_text_and_file_parts() {
     );
     assert_eq!(req.body.form_data[1].content_type, "application/pdf");
 }
+
+#[test]
+fn imports_curl_json_flag() {
+    let req = parse_curl("curl --json '{\"hello\":\"world\"}' https://example.com/api").unwrap();
+    assert_eq!(req.method, HttpMethod::POST);
+    assert_eq!(req.body.body_type, crate::models::BodyType::Json);
+    assert_eq!(req.body.content, "{\"hello\":\"world\"}");
+    assert!(req.headers.iter().any(|h| h.key == "Content-Type" && h.value == "application/json"));
+    assert!(req.headers.iter().any(|h| h.key == "Accept" && h.value == "application/json"));
+}
+
+#[test]
+fn imports_cookie_and_user_agent() {
+    let req = parse_curl("curl -A 'Silvapi/1.0' -b 'token=secret123' https://example.com/data").unwrap();
+    assert!(req.headers.iter().any(|h| h.key == "User-Agent" && h.value == "Silvapi/1.0"));
+    assert!(req.headers.iter().any(|h| h.key == "Cookie" && h.value == "token=secret123"));
+}
+
+#[test]
+fn imports_basic_auth_header() {
+    // Basic dXNlcjpwYXNz is base64 of "user:pass"
+    let req = parse_curl("curl -H 'Authorization: Basic dXNlcjpwYXNz' https://example.com").unwrap();
+    assert_eq!(req.auth.auth_type, AuthType::Basic);
+    assert_eq!(req.auth.basic_username, "user");
+    assert_eq!(req.auth.basic_password, "pass");
+}
+
+#[test]
+fn handles_line_continuations_with_whitespace() {
+    let cmd = "curl \\\n  -X POST \\\r\n  https://example.com/api \\\n  -d '{\"ok\":true}'";
+    let req = parse_curl(cmd).unwrap();
+    assert_eq!(req.method, HttpMethod::POST);
+    assert_eq!(req.url, "https://example.com/api");
+    assert_eq!(req.body.content, "{\"ok\":true}");
+}
+

@@ -1,13 +1,13 @@
 #![allow(unused_imports)]
 use std::collections::HashSet;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
-    input::{Input, InputEvent},
+    input::{Editor, Input, InputEvent},
     menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement,
@@ -62,10 +62,10 @@ impl ResponsePanel {
                             let bg_color = if selected {
                                 cx.theme().primary.opacity(0.1)
                             } else {
-                                gpui::transparent_black()
+                                gpui_kit::transparent_black()
                             };
                             let border = if selected {
-                                gpui::transparent_black()
+                                gpui_kit::transparent_black()
                             } else {
                                 cx.theme().border.opacity(0.5)
                             };
@@ -85,7 +85,7 @@ impl ResponsePanel {
                                     .cursor_pointer()
                                     .id(idx)
                                     .on_mouse_down(
-                                        gpui::MouseButton::Left,
+                                        gpui_kit::MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
                                             if this.selected_timeline_event == Some(idx) {
                                                 this.selected_timeline_event = None;
@@ -108,7 +108,7 @@ impl ResponsePanel {
                                             .child(
                                                 div()
                                                     .text_sm()
-                                                    .font_family("monospace")
+                                                    .font_family(cx.theme().mono_font_family.clone())
                                                     .text_color(cx.theme().foreground)
                                                     .child(single_line(&ev.name)),
                                             ),
@@ -116,7 +116,7 @@ impl ResponsePanel {
                                     .child(
                                         div()
                                             .text_sm()
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_color(cx.theme().muted_foreground)
                                             .child(ev.timestamp.clone()),
                                     )
@@ -181,11 +181,6 @@ impl ResponsePanel {
                     } else {
                         detail.to_string()
                     };
-                    let md_content = if serde_json::from_str::<serde_json::Value>(detail).is_ok() {
-                        format!("```json\n{}\n```", pretty_detail)
-                    } else {
-                        format!("```text\n{}\n```", pretty_detail)
-                    };
 
                     let detail_view = v_flex()
                         .h(px(250.))
@@ -201,7 +196,7 @@ impl ResponsePanel {
                                 .items_center()
                                 .child(
                                     div()
-                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .font_weight(gpui_kit::FontWeight::BOLD)
                                         .text_lg()
                                         .child(single_line(&ev.name)),
                                 )
@@ -233,10 +228,15 @@ impl ResponsePanel {
                                 .size_full()
                                 .id("timeline-detail-scroll")
                                 .overflow_y_scroll()
-                                .child(
-                                    TextView::markdown("timeline-md-view", md_content)
-                                        .selectable(true),
-                                ),
+                                .bg(cx.theme().background)
+                                .p_3()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .text_color(cx.theme().foreground)
+                                .child(pretty_detail),
                         );
 
                     container = container.child(detail_view);
@@ -293,10 +293,10 @@ impl ResponsePanel {
                         let bg_color = if selected {
                             cx.theme().primary.opacity(0.1)
                         } else {
-                            gpui::transparent_black()
+                            gpui_kit::transparent_black()
                         };
                         let border = if selected {
-                            gpui::transparent_black()
+                            gpui_kit::transparent_black()
                         } else {
                             cx.theme().border.opacity(0.5)
                         };
@@ -316,7 +316,7 @@ impl ResponsePanel {
                                 .cursor_pointer()
                                 .id(idx)
                                 .on_mouse_down(
-                                    gpui::MouseButton::Left,
+                                    gpui_kit::MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
                                         if this.selected_sse_event == Some(idx) {
                                             this.selected_sse_event = None;
@@ -333,7 +333,7 @@ impl ResponsePanel {
                                         .py_0p5()
                                         .rounded_md()
                                         .text_sm()
-                                        .font_family("monospace")
+                                        .font_family(cx.theme().mono_font_family.clone())
                                         .child(idx.to_string()),
                                 )
                                 .child(
@@ -343,7 +343,7 @@ impl ResponsePanel {
                                         .py_0p5()
                                         .rounded_md()
                                         .text_sm()
-                                        .font_family("monospace")
+                                        .font_family(cx.theme().mono_font_family.clone())
                                         .child(single_line(etype)),
                                 )
                                 .child(
@@ -351,7 +351,7 @@ impl ResponsePanel {
                                         .flex_1()
                                         .min_w_0()
                                         .text_sm()
-                                        .font_family("monospace")
+                                        .font_family(cx.theme().mono_font_family.clone())
                                         .text_color(cx.theme().foreground)
                                         .overflow_hidden()
                                         .whitespace_nowrap()
@@ -405,7 +405,6 @@ impl ResponsePanel {
             let allow_column_detail =
                 self.sse_detail_column_layout && Self::has_room_for_sse_side_detail(window);
             let detail_text = format_sse_detail_text(&data);
-            let sse_wrap = self.sse_detail_soft_wrap;
             self.sse_detail_editor.update(cx, |state, cx| {
                 if state.value() != detail_text {
                     // Reuse the editor (don't rebuild it) so it keeps its
@@ -414,7 +413,6 @@ impl ResponsePanel {
                     // editor. Rebuilding would reset the layout to width 0 and
                     // wrap one character per line.
                     state.set_value(detail_text, window, cx);
-                    state.set_soft_wrap(sse_wrap, window, cx);
                 }
             });
             let detail_view = v_flex()
@@ -435,7 +433,7 @@ impl ResponsePanel {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .font_weight(gpui::FontWeight::BOLD)
+                                .font_weight(gpui_kit::FontWeight::BOLD)
                                 .text_lg()
                                 .child("Message Received"),
                         )
@@ -464,24 +462,6 @@ impl ResponsePanel {
                                             this.sse_detail_column_layout =
                                                 wide_enough && !this.sse_detail_column_layout;
                                             cx.notify();
-                                            // The editor's wrap layout lags a
-                                            // width change by a frame, so after
-                                            // the new panel width settles, force
-                                            // it to re-wrap — otherwise it briefly
-                                            // shows the text unwrapped.
-                                            let editor = this.sse_detail_editor.clone();
-                                            let soft_wrap = this.sse_detail_soft_wrap;
-                                            cx.spawn_in(window, async move |_, cx| {
-                                                cx.background_executor()
-                                                    .timer(std::time::Duration::from_millis(48))
-                                                    .await;
-                                                let _ = cx.update(|window, cx| {
-                                                    editor.update(cx, |state, cx| {
-                                                        state.set_soft_wrap(soft_wrap, window, cx);
-                                                    });
-                                                });
-                                            })
-                                            .detach();
                                         })),
                                 )
                                 .child(
@@ -499,13 +479,10 @@ impl ResponsePanel {
                                         .ghost()
                                         .xsmall()
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            // Toggle wrap in place — recompute
-                                            // the layout instead of rebuilding
-                                            // the editor and re-setting its value.
                                             this.sse_detail_soft_wrap = !this.sse_detail_soft_wrap;
-                                            let soft_wrap = this.sse_detail_soft_wrap;
-                                            this.sse_detail_editor.update(cx, |state, cx| {
-                                                state.set_soft_wrap(soft_wrap, window, cx);
+                                            let wrap = this.sse_detail_soft_wrap;
+                                            this.sse_detail_editor.update(cx, |editor, cx| {
+                                                editor.set_soft_wrap(wrap, window, cx);
                                             });
                                             cx.notify();
                                         })),
@@ -536,10 +513,13 @@ impl ResponsePanel {
                         .p_3()
                         .id("sse-detail-scroll")
                         .child(
-                            Input::new(&self.sse_detail_editor)
-                                .min_w_0()
-                                .h_full()
-                                .w_full(),
+                            Editor::new(&self.sse_detail_editor)
+                                .text_size(cx.theme().font_size)
+                                .h(relative(1.0))
+                                .bordered(false)
+                                .appearance(false)
+                                .readonly(true)
+                                .context_menu(crate::ui::editor_utils::readonly_editor_context_menu),
                         ),
                 );
 

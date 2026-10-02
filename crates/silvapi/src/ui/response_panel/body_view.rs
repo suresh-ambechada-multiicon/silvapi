@@ -1,9 +1,9 @@
 #![allow(unused_imports)]
 use std::collections::HashSet;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
@@ -21,6 +21,8 @@ use crate::state::{AppEvent, AppState};
 
 use super::*;
 
+pub(super) const INITIAL_BUFFER_CHUNK_BYTES: usize = 200 * 1024;
+
 impl ResponsePanel {
     /// Set the response editor's text and force the wrap layout to recompute in
     /// the same frame. `set_value` alone only refreshes `wrap_width` on the next
@@ -33,11 +35,36 @@ impl ResponsePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let soft_wrap = self.soft_wrap && !self.response_editor_plain;
+        if text.len() <= INITIAL_BUFFER_CHUNK_BYTES {
+            self.response_editor.update(cx, |state, cx| {
+                if state.value() != text {
+                    state.set_value(text, window, cx);
+                    state.set_highlighter("json", cx);
+                }
+            });
+            return;
+        }
+
+        let chunk_end = INITIAL_BUFFER_CHUNK_BYTES.min(text.len());
+        let initial_chunk = text[..chunk_end].to_string();
         self.response_editor.update(cx, |state, cx| {
-            state.set_value(text, window, cx);
-            state.set_soft_wrap(soft_wrap, window, cx);
+            state.set_value(initial_chunk, window, cx);
+            state.set_highlighter("json", cx);
         });
+
+        let editor = self.response_editor.clone();
+        let full_text = text;
+        cx.spawn_in(window, async move |_, window| {
+            let _ = window.update(|window, cx| {
+                editor.update(cx, |state, cx| {
+                    if state.value() != full_text {
+                        state.set_value(full_text, window, cx);
+                        state.set_highlighter("json", cx);
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     pub(super) fn ensure_response_editor_mode(
@@ -51,18 +78,8 @@ impl ResponsePanel {
         }
 
         self.response_editor_plain = plain;
-        let soft_wrap = self.soft_wrap && !plain;
         self.response_editor.update(cx, |state, cx| {
-            let mut next = InputState::new(window, cx)
-                .multi_line(true)
-                .searchable(true)
-                .replaceable(false)
-                .placeholder("Response will appear here... (Ctrl+F to search)")
-                .soft_wrap(soft_wrap);
-            if !plain {
-                next = next.code_editor("json");
-            }
-            *state = next;
+            state.set_folding(!plain, window, cx);
         });
     }
 
@@ -88,7 +105,7 @@ impl ResponsePanel {
                     .gap_2()
                     .items_center()
                     .text_sm()
-                    .child("Receiving response")
+                    .child("Loading response")
                     .when_some(elapsed_ms, |el, elapsed_ms| {
                         el.child(dot_separator(cx))
                             .child(format_duration(elapsed_ms))
@@ -103,7 +120,7 @@ impl ResponsePanel {
             is_loading,
             loading_elapsed_ms,
             loading_size,
-            has_stream_body,
+            _has_stream_body,
             response_summary,
             has_response,
             has_error,
@@ -151,11 +168,7 @@ impl ResponsePanel {
                                 .gap_2()
                                 .items_center()
                                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child(
-                                    if has_stream_body {
-                                        "Receiving response..."
-                                    } else {
-                                        "Sending request..."
-                                    },
+                                    "Loading response...",
                                 ))
                                 .when_some(loading_elapsed_ms, |el, elapsed_ms| {
                                     el.child(dot_separator(cx)).child(
@@ -189,11 +202,11 @@ impl ResponsePanel {
                     .when_some(response_summary, |el, resp| {
                         let (status, status_text, time_ms, size, is_success, is_redirect) = resp;
                         let status_color: Hsla = if is_success {
-                            rgb(0x4CAF50).into()
+                            cx.theme().success
                         } else if is_redirect {
-                            rgb(0xFF9800).into()
+                            cx.theme().warning
                         } else {
-                            rgb(0xF44336).into()
+                            cx.theme().danger
                         };
 
                         el.child(
@@ -367,13 +380,10 @@ impl ResponsePanel {
                                 .ghost()
                                 .xsmall()
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    // Toggle wrap in place: recompute the wrap
-                                    // layout directly instead of rebuilding the
-                                    // whole editor + re-setting its value.
                                     this.soft_wrap = !this.soft_wrap;
-                                    let soft_wrap = this.soft_wrap && !this.response_editor_plain;
-                                    this.response_editor.update(cx, |state, cx| {
-                                        state.set_soft_wrap(soft_wrap, window, cx);
+                                    let wrap = this.soft_wrap;
+                                    this.response_editor.update(cx, |editor, cx| {
+                                        editor.set_soft_wrap(wrap, window, cx);
                                     });
                                     cx.notify();
                                 })),

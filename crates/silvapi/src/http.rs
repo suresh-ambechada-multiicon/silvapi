@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use std::time::Instant;
+use instant::Instant;
 
 use silvapi_core::models::{
     ApiRequest, AuthType, BodyType, FormDataPartKind, HttpResponse, KeyValue, RequestSnapshot,
@@ -23,9 +23,16 @@ pub struct HttpClient {
 fn describe_reqwest_error(e: &reqwest::Error) -> String {
     use std::error::Error;
 
+    let is_connect = {
+        #[cfg(not(target_arch = "wasm32"))]
+        { e.is_connect() }
+        #[cfg(target_arch = "wasm32")]
+        { false }
+    };
+
     let category = if e.is_timeout() {
         "Request timed out"
-    } else if e.is_connect() {
+    } else if is_connect {
         "Connection failed"
     } else if e.is_redirect() {
         "Too many redirects"
@@ -338,6 +345,7 @@ impl HttpClient {
             request: Some(snapshot.clone()),
             started_at: None,
             error: None,
+            formatted_body: None,
         });
 
         let mut body_bytes = Vec::new();
@@ -386,6 +394,7 @@ impl HttpClient {
             request: Some(snapshot),
             started_at: None,
             error: None,
+            formatted_body: None,
         }
         .with_body_bytes(&body_bytes))
     }

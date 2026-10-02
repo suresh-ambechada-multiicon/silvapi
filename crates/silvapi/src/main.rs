@@ -1,6 +1,8 @@
-use gpui::*;
-use gpui_component::{Root, Theme, ThemeRegistry};
+use gpui_kit::component::{Root, Theme, ThemeRegistry};
+use gpui_kit::*;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+
 
 mod http;
 mod runtime;
@@ -9,10 +11,20 @@ mod storage;
 mod ui;
 
 fn main() {
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets::new(""));
 
     app.run(move |cx| {
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
+
+        let fonts = vec![
+            std::borrow::Cow::Borrowed(include_bytes!("../Roboto-Regular.ttf") as &[u8]),
+            std::borrow::Cow::Borrowed(include_bytes!("../Roboto-Bold.ttf") as &[u8]),
+            std::borrow::Cow::Borrowed(include_bytes!("../RobotoMono-Regular.ttf") as &[u8]),
+            std::borrow::Cow::Borrowed(include_bytes!("../DejaVuSans.ttf") as &[u8]),
+            std::borrow::Cow::Borrowed(include_bytes!("../DejaVuSans-Bold.ttf") as &[u8]),
+            std::borrow::Cow::Borrowed(include_bytes!("../DejaVuSansMono.ttf") as &[u8]),
+        ];
+        let _ = cx.text_system().add_fonts(fonts);
         init_theme(cx);
 
         let window_options = WindowOptions {
@@ -40,43 +52,33 @@ fn main() {
     });
 }
 
-#[derive(rust_embed::RustEmbed)]
-#[folder = "../../themes/"]
-struct ThemeAssets;
-
 fn init_theme(cx: &mut App) {
     let theme_name = SharedString::from(
         crate::storage::load_theme_name()
             .ok()
             .flatten()
-            .unwrap_or_else(|| "Ayu Dark".to_string()),
+            .unwrap_or_else(|| "Default Dark".to_string()),
     );
-    let themes_dir = PathBuf::from("./themes");
 
-    // Load embedded themes first so they are always available
-    for file in ThemeAssets::iter() {
-        if let Some(content) = ThemeAssets::get(&file) {
-            if let Ok(json_str) = std::str::from_utf8(content.data.as_ref()) {
-                let _ = ThemeRegistry::global_mut(cx).load_themes_from_str(json_str);
-            }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let config_theme_dir = std::env::var("XDG_CONFIG_HOME")
+            .map(|p| PathBuf::from(p).join("silvapi").join("theme"))
+            .or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".config").join("silvapi").join("theme"))
+            })
+            .ok();
+
+        if let Some(dir) = config_theme_dir {
+            let _ = std::fs::create_dir_all(&dir);
+            let theme_name_clone = theme_name.clone();
+            let _ = ThemeRegistry::watch_dir(dir, cx, move |cx| {
+                apply_theme(&theme_name_clone, cx);
+            });
         }
     }
 
-    if themes_dir.exists() {
-        let _ = ThemeRegistry::watch_dir(themes_dir, cx, {
-            let theme_name = theme_name.clone();
-            move |cx| {
-                for file in ThemeAssets::iter() {
-                    if let Some(content) = ThemeAssets::get(&file) {
-                        if let Ok(json_str) = std::str::from_utf8(content.data.as_ref()) {
-                            let _ = ThemeRegistry::global_mut(cx).load_themes_from_str(json_str);
-                        }
-                    }
-                }
-                apply_theme(&theme_name, cx);
-            }
-        });
-    }
     apply_theme(&theme_name, cx);
 }
 
@@ -84,4 +86,6 @@ fn apply_theme(theme_name: &str, cx: &mut App) {
     if let Some(theme) = ThemeRegistry::global(cx).themes().get(theme_name).cloned() {
         Theme::global_mut(cx).apply_config(&theme);
     }
+    Theme::global_mut(cx).font_family = "Roboto".into();
+    Theme::global_mut(cx).mono_font_family = "Roboto Mono".into();
 }

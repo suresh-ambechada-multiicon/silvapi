@@ -1,21 +1,36 @@
 use std::collections::HashSet;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
+use gpui_kit::*;
+use gpui_kit::component::{
+    ActiveTheme, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
+    select::{Select, SelectEvent, SelectState},
     spinner::Spinner,
     v_flex,
 };
 
 use crate::state::{AppEvent, AppState};
+use crate::ui::request_panel::{
+    API_KEY_PLACEMENTS, JWT_ALGORITHMS, OAUTH_GRANTS, OAUTH_RESPONSE_TYPES,
+    OAUTH_SEND_CREDENTIALS, OAUTH_TOKEN_TARGETS,
+};
 use silvapi_core::models::{AuthType, CollectionItem, Folder, KeyValue};
 
 use super::actions::{FocusActiveRequest, RenameSelected};
+
+pub(crate) const FOLDER_AUTH_TYPES: [&'static str; 8] = [
+    "Inherit from Parent",
+    "API Key",
+    "AWS Signature",
+    "Basic Auth",
+    "Bearer Token",
+    "JWT Bearer",
+    "OAuth 2.0",
+    "No Auth",
+];
 
 // ── Drag payload ────────────────────────────────────────────────────────────
 
@@ -148,7 +163,7 @@ pub struct CollectionPanel {
     search_input: Entity<InputState>,
     flat_cache: Vec<FlatItem>,
     flat_dirty: bool,
-    list_scroll: gpui::UniformListScrollHandle,
+    list_scroll: gpui_kit::UniformListScrollHandle,
     folder_settings_id: Option<String>,
     folder_settings_tab: FolderSettingsTab,
     folder_name_input: Entity<InputState>,
@@ -158,6 +173,13 @@ pub struct CollectionPanel {
     folder_auth_enabled: bool,
     folder_auth_type: AuthType,
     folder_auth_inputs: FolderAuthInputs,
+    folder_auth_type_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_api_key_placement_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_jwt_alg_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_oauth_grant_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_oauth_token_target_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_oauth_response_type_select: Entity<SelectState<Vec<&'static str>>>,
+    folder_oauth_send_credentials_select: Entity<SelectState<Vec<&'static str>>>,
 
     _subs: Vec<Subscription>,
     _folder_auth_subs: Vec<Subscription>,
@@ -180,13 +202,11 @@ impl CollectionPanel {
         let folder_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
         let folder_description_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .multi_line(true)
-                .soft_wrap(true)
                 .placeholder("Folder description")
         });
 
         let folder_auth_inputs = Self::make_folder_auth_inputs(window, cx);
-        let folder_auth_subs = folder_auth_inputs
+        let mut folder_auth_subs = folder_auth_inputs
             .all()
             .into_iter()
             .map(|input| {
@@ -197,6 +217,166 @@ impl CollectionPanel {
                 })
             })
             .collect::<Vec<_>>();
+
+        let folder_auth_type_select = cx.new(|cx| {
+            SelectState::new(
+                FOLDER_AUTH_TYPES.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_api_key_placement_select = cx.new(|cx| {
+            SelectState::new(
+                API_KEY_PLACEMENTS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_jwt_alg_select = cx.new(|cx| {
+            SelectState::new(
+                JWT_ALGORITHMS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_oauth_grant_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_GRANTS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_oauth_token_target_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_TOKEN_TARGETS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_oauth_response_type_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_RESPONSE_TYPES.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let folder_oauth_send_credentials_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_SEND_CREDENTIALS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+
+        let auth_type_sub = cx.subscribe_in(
+            &folder_auth_type_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    if let Some(idx) = FOLDER_AUTH_TYPES.iter().position(|m| m == val) {
+                        let (enabled, auth_type) = Self::index_to_folder_auth(idx);
+                        this.set_folder_auth(enabled, auth_type, window, cx);
+                    }
+                }
+            },
+        );
+        let api_key_sub = cx.subscribe_in(
+            &folder_api_key_placement_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let in_header = *val == "Header";
+                    this.update_folder_auth(cx, |auth| {
+                        auth.api_key_in_header = in_header;
+                    });
+                    cx.notify();
+                }
+            },
+        );
+        let jwt_alg_sub = cx.subscribe_in(
+            &folder_jwt_alg_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    this.update_folder_auth(cx, |auth| {
+                        auth.jwt_algorithm = (*val).to_string();
+                    });
+                    cx.notify();
+                }
+            },
+        );
+        let oauth_grant_sub = cx.subscribe_in(
+            &folder_oauth_grant_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    this.update_folder_auth(cx, |auth| {
+                        auth.oauth_grant_type = (*val).to_string();
+                    });
+                    cx.notify();
+                }
+            },
+        );
+        let oauth_token_target_sub = cx.subscribe_in(
+            &folder_oauth_token_target_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    this.update_folder_auth(cx, |auth| {
+                        auth.oauth_token_target = (*val).to_string();
+                    });
+                    cx.notify();
+                }
+            },
+        );
+        let oauth_response_type_sub = cx.subscribe_in(
+            &folder_oauth_response_type_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    this.update_folder_auth(cx, |auth| {
+                        auth.oauth_response_type = (*val).to_string();
+                    });
+                    cx.notify();
+                }
+            },
+        );
+        let oauth_send_credentials_sub = cx.subscribe_in(
+            &folder_oauth_send_credentials_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    this.update_folder_auth(cx, |auth| {
+                        auth.oauth_send_credentials = (*val).to_string();
+                    });
+                    cx.notify();
+                }
+            },
+        );
+
+        folder_auth_subs.extend(vec![
+            auth_type_sub,
+            api_key_sub,
+            jwt_alg_sub,
+            oauth_grant_sub,
+            oauth_token_target_sub,
+            oauth_response_type_sub,
+            oauth_send_credentials_sub,
+        ]);
 
         // Expand all collections by default
         let mut expanded = HashSet::new();
@@ -257,7 +437,7 @@ impl CollectionPanel {
             search_input,
             flat_cache: Vec::new(),
             flat_dirty: true,
-            list_scroll: gpui::UniformListScrollHandle::new(),
+            list_scroll: gpui_kit::UniformListScrollHandle::new(),
             folder_settings_id: None,
             folder_settings_tab: FolderSettingsTab::General,
             folder_name_input,
@@ -267,9 +447,110 @@ impl CollectionPanel {
             folder_auth_enabled: false,
             folder_auth_type: AuthType::None,
             folder_auth_inputs,
+            folder_auth_type_select,
+            folder_api_key_placement_select,
+            folder_jwt_alg_select,
+            folder_oauth_grant_select,
+            folder_oauth_token_target_select,
+            folder_oauth_response_type_select,
+            folder_oauth_send_credentials_select,
             _subs: vec![ws_sub, rename_sub, search_sub],
             _folder_auth_subs: folder_auth_subs,
         }
+    }
+
+    pub(crate) fn folder_auth_to_index(enabled: bool, auth_type: &AuthType) -> usize {
+        if !enabled {
+            return 0;
+        }
+        match auth_type {
+            AuthType::ApiKey => 1,
+            AuthType::AwsV4 => 2,
+            AuthType::Basic => 3,
+            AuthType::Bearer => 4,
+            AuthType::Jwt => 5,
+            AuthType::OAuth2 => 6,
+            AuthType::None => 7,
+        }
+    }
+
+    pub(crate) fn index_to_folder_auth(idx: usize) -> (bool, AuthType) {
+        match idx {
+            0 => (false, AuthType::None),
+            1 => (true, AuthType::ApiKey),
+            2 => (true, AuthType::AwsV4),
+            3 => (true, AuthType::Basic),
+            4 => (true, AuthType::Bearer),
+            5 => (true, AuthType::Jwt),
+            6 => (true, AuthType::OAuth2),
+            _ => (true, AuthType::None),
+        }
+    }
+
+    pub(crate) fn sync_folder_selects(
+        &self,
+        auth: &silvapi_core::models::AuthConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let auth_idx = Self::folder_auth_to_index(self.folder_auth_enabled, &self.folder_auth_type);
+        self.folder_auth_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(auth_idx)), window, cx);
+        });
+
+        let api_key_idx = if auth.api_key_in_header { 0 } else { 1 };
+        self.folder_api_key_placement_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(api_key_idx)), window, cx);
+        });
+
+        let jwt_idx = JWT_ALGORITHMS
+            .iter()
+            .position(|&x| x.eq_ignore_ascii_case(&auth.jwt_algorithm))
+            .unwrap_or(0);
+        self.folder_jwt_alg_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(jwt_idx)), window, cx);
+        });
+
+        let norm_grant = folder_oauth_grant_label(&auth.oauth_grant_type);
+        let grant_idx = OAUTH_GRANTS
+            .iter()
+            .position(|&x| x == norm_grant)
+            .unwrap_or(0);
+        self.folder_oauth_grant_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(grant_idx)), window, cx);
+        });
+
+        let token_target = folder_default_if_empty(&auth.oauth_token_target, "access_token");
+        let token_target_idx = OAUTH_TOKEN_TARGETS
+            .iter()
+            .position(|&x| x == token_target.as_str())
+            .unwrap_or(0);
+        self.folder_oauth_token_target_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(token_target_idx)), window, cx);
+        });
+
+        let resp_type = folder_default_if_empty(&auth.oauth_response_type, "Access Token");
+        let resp_idx = OAUTH_RESPONSE_TYPES
+            .iter()
+            .position(|&x| x == resp_type.as_str())
+            .unwrap_or(0);
+        self.folder_oauth_response_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(resp_idx)), window, cx);
+        });
+
+        let creds = folder_default_if_empty(&auth.oauth_send_credentials, "In Request Body");
+        let creds_str = if creds == "As Basic Auth Header" {
+            "As Basic Authentication"
+        } else {
+            creds.as_str()
+        };
+        let creds_idx = OAUTH_SEND_CREDENTIALS
+            .iter()
+            .position(|&x| x == creds_str)
+            .unwrap_or(0);
+        self.folder_oauth_send_credentials_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(creds_idx)), window, cx);
+        });
     }
 
     fn make_kv_row(
@@ -342,7 +623,7 @@ impl Render for CollectionPanel {
                             });
                         }
                         this.list_scroll
-                            .scroll_to_item(new_pos, gpui::ScrollStrategy::Nearest);
+                            .scroll_to_item(new_pos, gpui_kit::ScrollStrategy::Nearest);
                         cx.notify();
                     }
                     "space" => {
@@ -654,7 +935,7 @@ fn label_text(label: &'static str, cx: &mut Context<CollectionPanel>) -> AnyElem
         .into_any_element()
 }
 
-fn folder_default_if_empty(value: &str, default: &str) -> String {
+pub(super) fn folder_default_if_empty(value: &str, default: &str) -> String {
     if value.is_empty() {
         default.to_string()
     } else {
@@ -662,7 +943,7 @@ fn folder_default_if_empty(value: &str, default: &str) -> String {
     }
 }
 
-fn folder_oauth_grant_label(value: &str) -> &'static str {
+pub(super) fn folder_oauth_grant_label(value: &str) -> &'static str {
     match value {
         "Implicit" => "Implicit",
         "Resource Owner Password Credential" | "Password" => "Resource Owner Password Credential",
@@ -671,7 +952,7 @@ fn folder_oauth_grant_label(value: &str) -> &'static str {
     }
 }
 
-fn folder_auth_select_field(
+pub(super) fn folder_auth_select_field(
     label: &'static str,
     child: impl IntoElement,
     cx: &App,

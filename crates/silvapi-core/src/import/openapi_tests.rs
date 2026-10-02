@@ -152,7 +152,7 @@ paths:
             .iter()
             .map(|part| part.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["media", "title"]
+        vec!["title", "media"]
     );
 }
 
@@ -198,6 +198,6 @@ paths:
             .iter()
             .map(|field| field.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["password", "username"]
+        vec!["username", "password"]
     );
 }

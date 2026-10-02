@@ -1,12 +1,10 @@
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
-    ActiveTheme, Icon, IconName, Root, Sizable as _, Theme, ThemeRegistry,
-    button::{Button, ButtonVariants as _, DropdownButton},
-    h_flex,
-    input::{Input, InputEvent, InputState},
-    menu::PopupMenuItem,
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
+    ActiveTheme, IndexPath, Theme, ThemeRegistry,
+    input::{InputEvent, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
+    select::{SearchableVec, SelectEvent, SelectState},
     v_flex,
 };
 
@@ -41,19 +39,23 @@ pub struct AppView {
     original_theme: String,
     theme_scroll: ScrollHandle,
     theme_search: Entity<InputState>,
+    pub(super) theme_select: Entity<SelectState<SearchableVec<SharedString>>>,
     api_picker_open: bool,
+    _api_focus: FocusHandle,
     api_search: Entity<InputState>,
     api_list: Vec<ApiPickerEntry>,
     api_list_query: String,
     api_list_dirty: bool,
     api_cursor: usize,
     open_tabs: Vec<String>,
+    tab_bar_scroll: ScrollHandle,
     tab_picker_open: bool,
+    tab_focus: FocusHandle,
     tab_search: Entity<InputState>,
     tab_list: Vec<ApiPickerEntry>,
     tab_list_query: String,
     tab_cursor: usize,
-    tab_scroll: gpui::UniformListScrollHandle,
+    tab_scroll: gpui_kit::UniformListScrollHandle,
     settings_open: bool,
     settings_focus: FocusHandle,
     shortcut_inputs: Vec<ShortcutInput>,
@@ -68,13 +70,14 @@ pub struct AppView {
     available_fonts: Vec<String>,
     selected_font_family: String,
     font_picker_open: bool,
+    font_focus: FocusHandle,
     font_search: Entity<InputState>,
     font_list: Vec<String>,
     font_cursor: usize,
-    font_scroll: gpui::UniformListScrollHandle,
+    font_scroll: gpui_kit::UniformListScrollHandle,
     font_size_input: Entity<InputState>,
-    font_size_slider: Entity<gpui_component::slider::SliderState>,
-    api_scroll: gpui::UniformListScrollHandle,
+    font_size_slider: Entity<gpui_kit::component::slider::SliderState>,
+    api_scroll: gpui_kit::UniformListScrollHandle,
     save_task: Option<Task<()>>,
     _subs: Vec<Subscription>,
     maximized_panel: MaximizedPanel,
@@ -187,7 +190,10 @@ impl AppView {
                 }
                 if matches!(ev, AppEvent::RequestSelected) {
                     if let Some(id) = app_state.read(cx).active_request_id.clone() {
-                        this.ensure_tab_for_request(id);
+                        this.ensure_tab_for_request(id.clone());
+                        if let Some(idx) = this.open_tabs.iter().position(|t| t == &id) {
+                            this.tab_bar_scroll.scroll_to_item(idx);
+                        }
                     }
                     cx.notify();
                 }
@@ -214,6 +220,46 @@ impl AppView {
                     this.original_theme = String::new();
                 }
                 _ => {}
+            },
+        );
+
+        let theme_items: Vec<SharedString> = {
+            let mut names: Vec<String> = ThemeRegistry::global(cx)
+                .themes()
+                .keys()
+                .map(|s| s.to_string())
+                .collect();
+            names.sort();
+            names.into_iter().map(SharedString::from).collect()
+        };
+        let current_theme_name = Theme::global(cx).theme_name().to_string();
+        let current_theme_idx = theme_items
+            .iter()
+            .position(|t| t.as_ref() == current_theme_name)
+            .unwrap_or(0);
+        let theme_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(theme_items),
+                Some(IndexPath::new(current_theme_idx)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+
+        let theme_select_sub = cx.subscribe_in(
+            &theme_select,
+            window,
+            |_this, _select, ev: &SelectEvent<SearchableVec<SharedString>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let name = val.to_string();
+                    if let Some(cfg) = ThemeRegistry::global(cx).themes().get(name.as_str()).cloned() {
+                        Theme::global_mut(cx).apply_config(&cfg);
+                        AppView::apply_user_font_settings_app(cx);
+                        cx.refresh_windows();
+                        let _ = crate::storage::save_theme_name(&name);
+                    }
+                }
             },
         );
 
@@ -287,7 +333,7 @@ impl AppView {
             .filter(|s| (10.0..=24.0).contains(s))
             .unwrap_or(16.0);
         let font_size_slider = cx.new(|_| {
-            gpui_component::slider::SliderState::new()
+            gpui_kit::component::slider::SliderState::new()
                 .min(10.0)
                 .max(24.0)
                 .step(1.0)
@@ -318,19 +364,19 @@ impl AppView {
         let font_size_slider_sub = cx.subscribe_in(
             &font_size_slider,
             window,
-            move |this, _, ev: &gpui_component::slider::SliderEvent, window, cx| {
+            move |this, _, ev: &gpui_kit::component::slider::SliderEvent, window, cx| {
                 match ev {
                     // While dragging, only reflect the number — applying the
                     // font size live would rescale the whole UI (and the slider
                     // itself) on every frame, making it jump under the cursor.
-                    gpui_component::slider::SliderEvent::Change(value) => {
+                    gpui_kit::component::slider::SliderEvent::Change(value) => {
                         let size = value.start().round() as i32;
                         font_size_for_slider.update(cx, |state, cx| {
                             state.set_value(size.to_string(), window, cx);
                         });
                     }
                     // Apply (and persist) once the drag ends.
-                    gpui_component::slider::SliderEvent::Release(_) => {
+                    gpui_kit::component::slider::SliderEvent::Release(_) => {
                         let family = this.selected_font_family.clone();
                         Self::save_font_settings(&family, &font_size_for_slider, cx);
                     }
@@ -382,19 +428,23 @@ impl AppView {
             original_theme: String::new(),
             theme_scroll: ScrollHandle::new(),
             theme_search,
+            theme_select,
             api_picker_open: false,
+            _api_focus: cx.focus_handle(),
             api_search,
             api_list: Vec::new(),
             api_list_query: String::new(),
             api_list_dirty: true,
             api_cursor: 0,
             open_tabs: Vec::new(),
+            tab_bar_scroll: ScrollHandle::new(),
             tab_picker_open: false,
+            tab_focus: cx.focus_handle(),
             tab_search,
             tab_list: Vec::new(),
             tab_list_query: String::new(),
             tab_cursor: 0,
-            tab_scroll: gpui::UniformListScrollHandle::new(),
+            tab_scroll: gpui_kit::UniformListScrollHandle::new(),
             settings_open: false,
             settings_focus: cx.focus_handle(),
             shortcut_inputs,
@@ -404,18 +454,20 @@ impl AppView {
             available_fonts,
             selected_font_family,
             font_picker_open: false,
+            font_focus: cx.focus_handle(),
             font_search,
             font_list: Vec::new(),
             font_cursor: 0,
-            font_scroll: gpui::UniformListScrollHandle::new(),
+            font_scroll: gpui_kit::UniformListScrollHandle::new(),
             font_size_input,
             font_size_slider,
-            api_scroll: gpui::UniformListScrollHandle::new(),
+            api_scroll: gpui_kit::UniformListScrollHandle::new(),
             save_task: None,
             _subs: {
                 let mut subs = vec![
                     storage_sub,
                     theme_search_sub,
+                    theme_select_sub,
                     api_search_sub,
                     tab_search_sub,
                     font_search_sub,
@@ -434,1158 +486,160 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
-        // Settings dialog size: large, but capped and viewport-relative so it
-        // fits on small windows.
+        // Clamp settings dialog to 70% of viewport, within sensible absolute bounds.
         let viewport = window.viewport_size();
-        let clamp_px = |value: Pixels, lo: f32, hi: f32| {
-            if value < px(lo) {
-                px(lo)
-            } else if value > px(hi) {
-                px(hi)
-            } else {
-                value
-            }
-        };
-        let settings_w = clamp_px(viewport.width * 0.7, 480.0, 860.0);
-        let settings_h = clamp_px(viewport.height * 0.8, 420.0, 720.0);
-
-        let theme_picker_open = self.theme_picker_open;
-
-        // Pre-build theme list items for the overlay
-        let mut theme_items: Vec<AnyElement> = Vec::new();
-        if theme_picker_open {
-            for (i, name) in self.theme_list.iter().enumerate() {
-                let is_cursor = i == self.theme_cursor;
-                let n = name.clone();
-                let idx = i;
-                theme_items.push(
-                    Button::new(SharedString::from(format!("tp-{}", i)))
-                        .label(name.clone())
-                        .ghost()
-                        .small()
-                        .when(is_cursor, |b| b.primary())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.theme_cursor = idx;
-                            this.apply_theme_at_cursor(cx);
-                            this.commit_theme_selection(cx);
-                            this.close_theme_picker(window, cx);
-                            this.original_theme = String::new();
-                        }))
-                        .into_any_element(),
-                );
-                let _ = n;
-            }
-        }
+        let clamp = |v: Pixels, lo: f32, hi: f32| v.max(px(lo)).min(px(hi));
+        let settings_w = clamp(viewport.width * 0.7, 480.0, 860.0);
+        let settings_h = clamp(viewport.height * 0.8, 420.0, 720.0);
 
         div()
-            .relative()
-            .size_full()
+            .relative().size_full()
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle)
             // Swallows keys whose old binding was reassigned (see shadow_shortcut_key).
             .on_action(cx.listener(|_this, _: &ShortcutNoOp, _window, _cx| {}))
             .on_action(cx.listener(|this, _: &ThemePicker, window, cx| {
                 if this.recording_shortcut.is_some() { return; }
-                if this.theme_picker_open {
-                    this.restore_original_theme(cx);
-                    this.close_theme_picker(window, cx);
-                } else {
-                    this.open_theme_picker(window, cx);
-                }
+                if this.theme_picker_open { this.restore_original_theme(cx); this.close_theme_picker(window, cx); }
+                else { this.open_theme_picker(window, cx); }
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                this.open_settings(window, cx);
+                if this.recording_shortcut.is_none() { this.open_settings(window, cx); }
             }))
             .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                this.close_settings(window, cx);
+                if this.recording_shortcut.is_none() { this.close_settings(window, cx); }
             }))
-	            .on_action(cx.listener(|this, _: &NextApi, _window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_adjacent_tab(1, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &PrevApi, _window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_adjacent_tab(-1, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.close_active_tab(window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab1, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(0, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab2, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(1, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab3, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(2, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab4, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(3, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab5, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(4, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab6, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(5, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab7, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(6, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab8, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(7, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchTab9, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                this.select_tab_number(8, window, cx);
-	            }))
-	            .on_action(cx.listener(|this, _: &SwitchLastTab, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                if !this.open_tabs.is_empty() {
-	                    this.select_tab_number(this.open_tabs.len() - 1, window, cx);
-	                }
-	            }))
-	            .on_action(cx.listener(|this, _: &ApiPicker, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                if this.api_picker_open {
-	                    this.close_api_picker(window, cx);
-	                } else {
-	                    this.open_api_picker(window, cx);
-	                }
-	            }))
-	            .on_action(cx.listener(|this, _: &TabPicker, window, cx| {
-	                if this.recording_shortcut.is_some() { return; }
-	                if this.tab_picker_open {
-	                    this.close_tab_picker(window, cx);
-	                } else {
-	                    this.open_tab_picker(window, cx);
-	                }
-	            }))
-            .on_action(cx.listener(|this, _: &FocusCollectionPanel, window, cx| {
+            .on_action(cx.listener(|this, _: &NextApi, _w, cx| { if this.recording_shortcut.is_none() { this.select_adjacent_tab(1, cx); } }))
+            .on_action(cx.listener(|this, _: &PrevApi, _w, cx| { if this.recording_shortcut.is_none() { this.select_adjacent_tab(-1, cx); } }))
+            .on_action(cx.listener(|this, _: &CloseTab, w, cx| { if this.recording_shortcut.is_none() { this.close_active_tab(w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab1, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(0, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab2, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(1, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab3, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(2, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab4, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(3, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab5, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(4, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab6, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(5, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab7, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(6, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab8, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(7, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchTab9, w, cx| { if this.recording_shortcut.is_none() { this.select_tab_number(8, w, cx); } }))
+            .on_action(cx.listener(|this, _: &SwitchLastTab, w, cx| {
+                if this.recording_shortcut.is_none() && !this.open_tabs.is_empty() {
+                    this.select_tab_number(this.open_tabs.len() - 1, w, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ApiPicker, w, cx| {
+                if this.recording_shortcut.is_some() { return; }
+                if this.api_picker_open { this.close_api_picker(w, cx); } else { this.open_api_picker(w, cx); }
+            }))
+            .on_action(cx.listener(|this, _: &TabPicker, w, cx| {
+                if this.recording_shortcut.is_some() { return; }
+                if this.tab_picker_open { this.close_tab_picker(w, cx); } else { this.open_tab_picker(w, cx); }
+            }))
+            .on_action(cx.listener(|this, _: &FocusCollectionPanel, w, cx| {
                 if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.collection_panel.read(cx).focus_handle(cx);
-                cx.defer_in(window, move |_, window, cx| {
-                    fh.focus(window, cx);
-                });
+                cx.defer_in(w, move |_, w, cx| { fh.focus(w, cx); });
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &FocusRequestPanel, window, cx| {
+            .on_action(cx.listener(|this, _: &FocusRequestPanel, w, cx| {
                 if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.request_panel.read(cx).focus_handle(cx);
-                cx.defer_in(window, move |_, window, cx| {
-                    fh.focus(window, cx);
-                });
+                cx.defer_in(w, move |_, w, cx| { fh.focus(w, cx); });
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &FocusResponsePanel, window, cx| {
+            .on_action(cx.listener(|this, _: &FocusResponsePanel, w, cx| {
                 if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
                 let fh = this.response_panel.read(cx).focus_handle(cx);
-                cx.defer_in(window, move |_, window, cx| {
-                    fh.focus(window, cx);
-                });
+                cx.defer_in(w, move |_, w, cx| { fh.focus(w, cx); });
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &FocusUrl, window, cx| {
+            .on_action(cx.listener(|this, _: &FocusUrl, w, cx| {
                 if this.recording_shortcut.is_some() { return; }
                 this.maximized_panel = MaximizedPanel::None;
-                this.request_panel.update(cx, |panel, cx| {
-                    panel.focus_url(window, cx);
-                });
+                this.request_panel.update(cx, |p, cx| { p.focus_url(w, cx); });
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &SendRequest, window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                this.request_panel.update(cx, |panel, cx| {
-                    panel.send_request(window, cx);
-                });
-            }))
-            .on_action(cx.listener(|this, _: &ToggleMaximize, window, cx| {
-                if this.recording_shortcut.is_some() { return; }
-                if this.maximized_panel != MaximizedPanel::None {
-                    this.maximized_panel = MaximizedPanel::None;
-                } else {
-                    let c_focus = this.collection_panel.read(cx).focus_handle(cx);
-                    let req_focus = this.request_panel.read(cx).focus_handle(cx);
-                    let res_focus = this.response_panel.read(cx).focus_handle(cx);
-                    let cf = c_focus.contains_focused(window, cx);
-                    let rf = req_focus.contains_focused(window, cx);
-                    let resf = res_focus.contains_focused(window, cx);
-
-                    if cf {
-                        this.maximized_panel = MaximizedPanel::Collection;
-                    } else if rf {
-                        this.maximized_panel = MaximizedPanel::Request;
-                    } else if resf {
-                        this.maximized_panel = MaximizedPanel::Response;
-                    } else {
-                        // Check if any specific input in Request is focused
-                        let mut req_input_focused = false;
-                        this.request_panel.update(cx, |p, cx| {
-                            req_input_focused = p.has_focus(window, cx);
-                        });
-
-                        let mut res_input_focused = false;
-                        this.response_panel.update(cx, |p, cx| {
-                            res_input_focused = p.has_focus(window, cx);
-                        });
-
-                        if req_input_focused {
-                            this.maximized_panel = MaximizedPanel::Request;
-                        } else if res_input_focused {
-                            this.maximized_panel = MaximizedPanel::Response;
-                        } else {
-                            // default fallback
-                            this.maximized_panel = MaximizedPanel::Response;
-                        }
-                    }
+            .on_action(cx.listener(|this, _: &SendRequest, w, cx| {
+                if this.recording_shortcut.is_none() {
+                    this.request_panel.update(cx, |p, cx| { p.send_request(w, cx); });
                 }
-                cx.notify();
             }))
-            .child(
-	                v_flex().size_full().child(self.top_bar.clone()).child(self.render_tab_strip(window, cx)).child(
-                    div().flex_1().overflow_hidden().child(
-                        match self.maximized_panel {
-                            MaximizedPanel::Collection => self.collection_panel.clone().into_any_element(),
-                            MaximizedPanel::Request => self.request_panel.clone().into_any_element(),
-                            MaximizedPanel::Response => self.response_panel.clone().into_any_element(),
-                            MaximizedPanel::None => {
-                                match self.response_layout {
-                                    ResponseLayout::Row => {
-                                        h_resizable("main-panels")
-                                        .with_state(&self.row_resize_state)
-                                        .child(
-                                            resizable_panel()
-                                                .size(px(260.))
-                                                .size_range(px(180.)..px(400.))
-                                                .child(self.collection_panel.clone()),
-                                        )
-                                        .child(
-                                            resizable_panel()
-                                                .size(px(520.))
-                                                .size_range(px(340.)..px(900.))
-                                                .child(self.request_panel.clone()),
-                                        )
-                                        .child(
-                                            resizable_panel()
-                                                .size(px(640.))
-                                                .size_range(px(360.)..px(1600.))
-                                                .child(self.response_panel.clone()),
-                                        )
-                                        .into_any_element()
-                                    }
-                                    ResponseLayout::Column => {
-                                        h_resizable("main-panels-col")
-                                        .with_state(&self.column_resize_state)
-                                        .child(
-                                            resizable_panel()
-                                                .size(px(260.))
-                                                .size_range(px(180.)..px(400.))
-                                                .child(self.collection_panel.clone()),
-                                        )
-                                        .child(
-                                            resizable_panel()
-                                                .size(px(1000.))
-                                                .size_range(px(620.)..px(2200.))
-                                                .child(
-                                                    v_resizable("req-resp-col")
-                                                        .with_state(&self.resize_state_v)
-                                                        .child(
-                                                            resizable_panel()
-                                                                .size(px(350.))
-                                                                .size_range(px(200.)..px(600.))
-                                                                .child(self.request_panel.clone()),
-                                                        )
-                                                        .child(
-                                                            resizable_panel()
-                                                                .child(self.response_panel.clone()),
-                                                        )
-                                                ),
-                                        )
-                                        .into_any_element()
-                                    }
-                                }
-                            }
-                        }
-                    ),
-                ),
-            )
-            // ── Centered theme picker overlay ──────────────────────────────
-            .when(theme_picker_open, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.close_theme_picker(window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .id("theme-picker-panel")
-                                .w(px(300.))
-                                .max_h(px(520.))
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .shadow_lg()
-                                .overflow_hidden()
-                                .occlude()
-                                .track_focus(&self.theme_focus)
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        let n = this.theme_list.len();
-                                        if n == 0 {
-                                            return;
-                                        }
-                                        match event.keystroke.key.as_str() {
-                                            "up" => {
-                                                if this.theme_cursor > 0 {
-                                                    this.theme_cursor -= 1;
-                                                } else {
-                                                    this.theme_cursor = n - 1;
-                                                }
-                                                this.apply_theme_at_cursor(cx);
-                                                this.theme_scroll.scroll_to_item(this.theme_cursor);
-                                                cx.notify();
-                                            }
-                                            "down" => {
-                                                this.theme_cursor = (this.theme_cursor + 1) % n;
-                                                this.apply_theme_at_cursor(cx);
-                                                this.theme_scroll.scroll_to_item(this.theme_cursor);
-                                                cx.notify();
-                                            }
-                                            "enter" => {
-                                                this.commit_theme_selection(cx);
-                                                this.close_theme_picker(window, cx);
-                                                this.original_theme = String::new();
-                                            }
-                                            "escape" => {
-                                                this.restore_original_theme(cx);
-                                                this.close_theme_picker(window, cx);
-                                            }
-                                            _ => {}
-                                        }
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
-                                        .child(Input::new(&self.theme_search)),
-                                )
-                                .child(
-                                    div()
-                                        .id("theme-list")
-                                        .flex_1()
-                                        .overflow_y_scroll()
-                                        .track_scroll(&self.theme_scroll)
-                                        .max_h(px(460.))
-                                        .flex()
-                                        .flex_col()
-                                        .py_1()
-                                        .children(theme_items),
-                                ),
-                        ),
-                )
-            })
-            // ── Centered API picker overlay ──────────────────────────────
-            .when(self.api_picker_open, |el| {
-                let query = self.api_search.read(cx).value().to_lowercase();
-                self.ensure_api_list_for_query(&query, cx);
-                let visible_rows = self.api_list.len().max(1).min(10) as f32;
-                let list_height = 6. + visible_rows * 40.;
-                let panel_height = 62. + list_height;
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.close_api_picker(window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .id("api-picker-panel")
-                                .w(px(640.))
-                                .h(px(panel_height))
-                                .max_h(px(468.))
-                                .flex()
-                                .flex_col()
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .shadow_lg()
-                                .overflow_hidden()
-                                .occlude()
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        let n = this.api_list.len();
-                                        if n == 0 {
-                                            return;
-                                        }
-                                        match event.keystroke.key.as_str() {
-                                            "up" => {
-                                                if this.api_cursor > 0 {
-                                                    this.api_cursor -= 1;
-                                                } else {
-                                                    this.api_cursor = n - 1;
-                                                }
-                                                this.api_scroll.scroll_to_item(
-                                                    this.api_cursor,
-                                                    ScrollStrategy::Nearest,
-                                                );
-                                                cx.notify();
-                                            }
-                                            "down" => {
-                                                this.api_cursor = (this.api_cursor + 1) % n;
-                                                this.api_scroll.scroll_to_item(
-                                                    this.api_cursor,
-                                                    ScrollStrategy::Nearest,
-                                                );
-                                                cx.notify();
-                                            }
-                                            "escape" => {
-                                                this.close_api_picker(window, cx);
-                                            }
-                                            _ => {}
-                                        }
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .px_3()
-                                        .py_1()
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
-                                        .child(Input::new(&self.api_search)),
-                                )
-                                .child(
-                                    div()
-                                        .id("api-list")
-                                        .h(px(list_height))
-                                        .max_h(px(406.))
-                                        .min_h_0()
-                                        .when(self.api_list.is_empty(), |el| {
-                                            el.child(
-                                                div()
-                                                    .w_full()
-                                                    .px_4()
-                                                    .py_3()
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("No APIs found"),
-                                            )
-                                        })
-                                        .when(!self.api_list.is_empty(), |el| {
-                                            el.child(
-                                                uniform_list(
-                                                    "api-picker-list",
-                                                    self.api_list.len(),
-                                                    cx.processor(
-                                                        |this: &mut AppView,
-                                                         range: std::ops::Range<usize>,
-                                                         _window,
-                                                         cx| {
-                                                            this.render_api_picker_rows(range, cx)
-                                                        },
-                                                    ),
-                                                )
-                                                .track_scroll(&self.api_scroll)
-                                                .size_full(),
-                                            )
-                                        }),
-                                ),
-                        ),
-                )
-	            })
-	            .when(self.tab_picker_open, |el| {
-	                let visible_rows = self.tab_list.len().max(1).min(10) as f32;
-	                let list_height = 6. + visible_rows * 40.;
-	                let panel_height = 62. + list_height;
-	                el.child(
-	                    div()
-	                        .absolute()
-	                        .top_0()
-	                        .left_0()
-	                        .size_full()
-	                        .flex()
-	                        .items_center()
-	                        .justify_center()
-	                        .occlude()
-	                        .on_mouse_down(
-	                            MouseButton::Left,
-	                            cx.listener(|this, _, window, cx| {
-	                                this.close_tab_picker(window, cx);
-	                            }),
-	                        )
-	                        .child(
-	                            div()
-	                                .id("tab-picker-panel")
-	                                .w(px(680.))
-	                                .h(px(panel_height))
-	                                .max_h(px(468.))
-	                                .flex()
-	                                .flex_col()
-	                                .bg(cx.theme().background)
-	                                .border_1()
-	                                .border_color(cx.theme().border)
-	                                .rounded_lg()
-	                                .shadow_lg()
-	                                .overflow_hidden()
-	                                .occlude()
-	                                .on_key_down(cx.listener(
-	                                    |this, event: &KeyDownEvent, window, cx| {
-	                                        let n = this.tab_list.len();
-	                                        match event.keystroke.key.as_str() {
-	                                            "up" if n > 0 => {
-	                                                if this.tab_cursor > 0 {
-	                                                    this.tab_cursor -= 1;
-	                                                } else {
-	                                                    this.tab_cursor = n - 1;
-	                                                }
-	                                                this.tab_scroll.scroll_to_item(
-	                                                    this.tab_cursor,
-	                                                    ScrollStrategy::Nearest,
-	                                                );
-	                                                cx.notify();
-	                                            }
-	                                            "down" if n > 0 => {
-	                                                this.tab_cursor = (this.tab_cursor + 1) % n;
-	                                                this.tab_scroll.scroll_to_item(
-	                                                    this.tab_cursor,
-	                                                    ScrollStrategy::Nearest,
-	                                                );
-	                                                cx.notify();
-	                                            }
-	                                            "escape" => {
-	                                                this.close_tab_picker(window, cx);
-	                                            }
-	                                            _ => {}
-	                                        }
-	                                    },
-	                                ))
-	                                .child(
-	                                    div()
-	                                        .px_3()
-	                                        .py_1()
-	                                        .border_b_1()
-	                                        .border_color(cx.theme().border)
-	                                        .child(Input::new(&self.tab_search)),
-	                                )
-	                                .child(
-	                                    div()
-	                                        .id("tab-list")
-	                                        .h(px(list_height))
-	                                        .max_h(px(406.))
-	                                        .min_h_0()
-	                                        .when(self.tab_list.is_empty(), |el| {
-	                                            el.child(
-	                                                div()
-	                                                    .w_full()
-	                                                    .px_4()
-	                                                    .py_3()
-	                                                    .text_sm()
-	                                                    .text_color(cx.theme().muted_foreground)
-	                                                    .child("No open tabs"),
-	                                            )
-	                                        })
-	                                        .when(!self.tab_list.is_empty(), |el| {
-	                                            el.child(
-	                                                uniform_list(
-	                                                    "tab-picker-list",
-	                                                    self.tab_list.len(),
-	                                                    cx.processor(
-	                                                        |this: &mut AppView,
-	                                                         range: std::ops::Range<usize>,
-	                                                         _window,
-	                                                         cx| {
-	                                                            this.render_tab_picker_rows(range, cx)
-	                                                        },
-	                                                    ),
-	                                                )
-	                                                .track_scroll(&self.tab_scroll)
-	                                                .size_full(),
-	                                            )
-	                                        }),
-	                                ),
-	                        ),
-	                )
-	            })
-	            .when(self.font_picker_open, |el| {
-                let visible_rows = self.font_list.len().max(1).min(12) as f32;
-                let list_height = 8. + visible_rows * 36.;
-                let panel_height = 62. + list_height;
-                let font_count = self.font_list.len();
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.close_font_picker(window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .id("font-picker-panel")
-                                .w(px(420.))
-                                .h(px(panel_height))
-                                .max_h(px(560.))
-                                .flex()
-                                .flex_col()
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .shadow_lg()
-                                .overflow_hidden()
-                                .occlude()
-                                .on_key_down(cx.listener(
-                                    move |this, event: &KeyDownEvent, window, cx| {
-                                        let n = this.font_list.len();
-                                        match event.keystroke.key.as_str() {
-                                            "up" if n > 0 => {
-                                                if this.font_cursor > 0 {
-                                                    this.font_cursor -= 1;
-                                                } else {
-                                                    this.font_cursor = n - 1;
-                                                }
-                                                this.font_scroll
-                                                    .scroll_to_item(this.font_cursor, ScrollStrategy::Nearest);
-                                                cx.notify();
-                                            }
-                                            "down" if n > 0 => {
-                                                this.font_cursor = (this.font_cursor + 1) % n;
-                                                this.font_scroll
-                                                    .scroll_to_item(this.font_cursor, ScrollStrategy::Nearest);
-                                                cx.notify();
-                                            }
-                                            "enter" if n > 0 => {
-                                                if let Some(font) =
-                                                    this.font_list.get(this.font_cursor).cloned()
-                                                {
-                                                    this.select_font(font, cx);
-                                                }
-                                                this.close_font_picker(window, cx);
-                                            }
-                                            "escape" => {
-                                                this.close_font_picker(window, cx);
-                                            }
-                                            _ => {}
-                                        }
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
-                                        .child(Input::new(&self.font_search)),
-                                )
-                                .child(
-                                    div()
-                                        .id("font-list")
-                                        .h(px(list_height))
-                                        .max_h(px(498.))
-                                        .min_h_0()
-                                        .when(font_count == 0, |el| {
-                                            el.child(
-                                                div()
-                                                    .w_full()
-                                                    .px_4()
-                                                    .py_3()
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("No fonts found"),
-                                            )
-                                        })
-                                        .when(font_count > 0, |el| {
-                                            el.child(
-                                                uniform_list(
-                                                    "font-picker-list",
-                                                    font_count,
-                                                    cx.processor(
-                                                        |this: &mut AppView,
-                                                         range: std::ops::Range<usize>,
-                                                         _window,
-                                                         cx| {
-                                                            let mut rows: Vec<AnyElement> = Vec::new();
-                                                            for idx in range {
-                                                                if idx >= this.font_list.len() {
-                                                                    continue;
-                                                                }
-                                                                let font = this.font_list[idx].clone();
-                                                                let is_cursor =
-                                                                    idx == this.font_cursor;
-                                                                let is_selected =
-                                                                    font == this.selected_font_family;
-                                                                let bg = if is_cursor {
-                                                                    cx.theme().primary.opacity(0.1)
-                                                                } else {
-                                                                    gpui::transparent_black()
-                                                                };
-                                                                let text_color = if is_selected {
-                                                                    cx.theme().primary
-                                                                } else {
-                                                                    cx.theme().foreground
-                                                                };
-                                                                let font_for_click = font.clone();
-                                                                let font_for_style = font.clone();
-                                                                rows.push(
-                                                                    h_flex()
-                                                                        .id(SharedString::from(
-                                                                            format!(
-                                                                                "font-picker-row-{}",
-                                                                                idx
-                                                                            ),
-                                                                        ))
-                                                                        .w_full()
-                                                                        .h(px(36.))
-                                                                        .px_3()
-                                                                        .gap_2()
-                                                                        .items_center()
-                                                                        .bg(bg)
-                                                                        .cursor_pointer()
-                                                                        .on_mouse_down(
-                                                                            gpui::MouseButton::Left,
-                                                                            cx.listener(
-                                                                                move |this, _, window, cx| {
-                                                                                    this.font_cursor = idx;
-                                                                                    this.select_font(font_for_click.clone(), cx);
-                                                                                    this.close_font_picker(window, cx);
-                                                                                },
-                                                                            ),
-                                                                        )
-                                                                        .child(
-                                                                            div()
-                                                                                .w(px(18.))
-                                                                                .child(if is_selected {
-                                                                                    Icon::new(IconName::Check)
-                                                                                        .xsmall()
-                                                                                        .text_color(cx.theme().primary)
-                                                                                        .into_any_element()
-                                                                                } else {
-                                                                                    div().into_any_element()
-                                                                                }),
-                                                                        )
-                                                                        .child(
-                                                                            div()
-                                                                                .flex_1()
-                                                                                .overflow_hidden()
-                                                                                .text_ellipsis()
-                                                                                .text_sm()
-                                                                                .text_color(text_color)
-                                                                                .font_family(font_for_style)
-                                                                                .child(font),
-                                                                        )
-                                                                        .into_any_element(),
-                                                                );
-                                                            }
-                                                            rows
-                                                        },
-                                                    ),
-                                                )
-                                                .track_scroll(&self.font_scroll)
-                                                .size_full(),
-                                            )
-                                        }),
-                                ),
-                        ),
-                )
-            })
+            .on_action(cx.listener(|this, _: &ToggleMaximize, w, cx| {
+                if this.recording_shortcut.is_none() { this.toggle_maximize(w, cx); }
+            }))
+            .child(self.render_main_layout(window, cx))
+            .when(self.theme_picker_open, |el| el.child(self.render_theme_picker_overlay(window, cx)))
+            .when(self.tab_picker_open,   |el| el.child(self.render_tab_picker_overlay(window, cx)))
+            .when(self.font_picker_open,  |el| el.child(self.render_font_picker_overlay(window, cx)))
             .when(self.settings_open && !self.font_picker_open, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(cx.theme().background.opacity(0.72))
-                        // Backdrop: block clicks reaching the app behind and
-                        // close the dialog on an outside click.
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.close_settings(window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .id("settings-panel")
-                                .w(settings_w)
-                                .h(settings_h)
-                                .bg(cx.theme().background)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .shadow_lg()
-                                .overflow_hidden()
-                                // Swallow clicks inside the panel so they don't
-                                // fall through to the backdrop and close it.
-                                .occlude()
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                                .track_focus(&self.settings_focus)
-                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                    if event.keystroke.key == "escape" {
-                                        this.close_settings(window, cx);
-                                    }
-                                }))
-                                .child(
-                                    v_flex()
-                                        .size_full()
-                                        .child(
-                                            h_flex()
-                                                .px_4()
-                                                .py_3()
-                                                .border_b_1()
-                                                .border_color(cx.theme().border)
-                                                .justify_between()
-                                                .child(div().font_weight(gpui::FontWeight::BOLD).child("Settings"))
-                                                .child(
-                                                    Button::new("settings-close")
-                                                        .icon(IconName::Close)
-                                                        .tooltip("Close settings")
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .on_click(cx.listener(|this, _, window, cx| {
-                                                            this.close_settings(window, cx);
-                                                        }))
-                                                )
-                                        )
-                                        .child(
-                                            div().id("settings-scroll").flex_1().overflow_y_scroll().p_4()
-                                                .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Keybindings"))
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child("Click a shortcut, then press the keys (Enter is allowed). Esc cancels."),
-                                                )
-                                                .child(
-                                                    v_flex().gap_2().mt_2()
-                                                        .children(self.shortcut_inputs.iter().map(|shortcut| {
-                                                            let spec = shortcut.spec.clone();
-                                                            let recording =
-                                                                self.recording_shortcut.as_deref() == Some(spec.id);
-                                                            let current = shortcut.input.read(cx).value().to_string();
-                                                            let label_text = if recording {
-                                                                "Press keys…".to_string()
-                                                            } else if current.trim().is_empty() {
-                                                                "Unassigned".to_string()
-                                                            } else {
-                                                                current.clone()
-                                                            };
-                                                            let capture_input = shortcut.input.clone();
-                                                            let capture_spec = spec.clone();
-                                                            let reset_input = shortcut.input.clone();
-                                                            let reset_spec = spec.clone();
-                                                            let start_id = spec.id;
-                                                            h_flex()
-                                                                .justify_between()
-                                                                .items_center()
-                                                                .gap_4()
-                                                                .child(
-                                                                    div()
-                                                                        .flex_1()
-                                                                        .text_sm()
-                                                                        .child(spec.label),
-                                                                )
-                                                                .child(
-                                                                    h_flex()
-                                                                        .gap_1()
-                                                                        .items_center()
-                                                                        .child(
-                                                                            div()
-                                                                                .id(SharedString::from(format!("kb-{}", spec.id)))
-                                                                                .w(px(180.))
-                                                                                .h(px(30.))
-                                                                                .px_2()
-                                                                                .flex()
-                                                                                .items_center()
-                                                                                .rounded_md()
-                                                                                .border_1()
-                                                                                .border_color(if recording {
-                                                                                    cx.theme().primary
-                                                                                } else {
-                                                                                    cx.theme().border
-                                                                                })
-                                                                                .bg(if recording {
-                                                                                    cx.theme().primary.opacity(0.1)
-                                                                                } else {
-                                                                                    cx.theme().background
-                                                                                })
-                                                                                .cursor_pointer()
-                                                                                .text_sm()
-                                                                                .font_family("monospace")
-                                                                                .text_color(if recording {
-                                                                                    cx.theme().primary
-                                                                                } else if current.trim().is_empty() {
-                                                                                    cx.theme().muted_foreground
-                                                                                } else {
-                                                                                    cx.theme().foreground
-                                                                                })
-                                                                                .when(recording, |el| {
-                                                                                    el.track_focus(&self.shortcut_capture_focus)
-                                                                                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                                                                                            let ks = &event.keystroke;
-                                                                                            let key = ks.key.as_str();
-                                                                                            cx.stop_propagation();
-                                                                                            if key == "escape" {
-                                                                                                this.cancel_recording_shortcut(cx);
-                                                                                                return;
-                                                                                            }
-                                                                                            if key.is_empty()
-                                                                                                || matches!(key, "control" | "shift" | "alt" | "platform" | "cmd" | "super" | "fn" | "function")
-                                                                                            {
-                                                                                                return;
-                                                                                            }
-                                                                                            // Character keys need Ctrl/Alt/Cmd — Shift alone
-                                                                                            // just makes an uppercase character, so it doesn't
-                                                                                            // count. Named keys (enter, tab, f-keys, arrows, …)
-                                                                                            // are allowed without a modifier.
-                                                                                            let mods = ks.modifiers;
-                                                                                            let has_real_modifier =
-                                                                                                mods.control || mods.alt || mods.platform;
-                                                                                            let is_single_char = key.chars().count() == 1;
-                                                                                            if is_single_char && !has_real_modifier {
-                                                                                                this.shortcut_message = Some(
-                                                                                                    "Use Ctrl or Alt — Shift alone isn't enough for a shortcut.".to_string(),
-                                                                                                );
-                                                                                                cx.notify();
-                                                                                                return;
-                                                                                            }
-                                                                                            let combo = ks.unparse();
-                                                                                            // Enforce uniqueness: reject a combo that is
-                                                                                            // already bound to a different action so one
-                                                                                            // keystroke never maps to two actions. The existing
-                                                                                            // binding is left untouched.
-                                                                                            let taken_by = this
-                                                                                                .shortcut_inputs
-                                                                                                .iter()
-                                                                                                .find(|s| {
-                                                                                                    s.spec.id != capture_spec.id
-                                                                                                        && s.input.read(cx).value().to_string() == combo
-                                                                                                })
-                                                                                                .map(|s| s.spec.label);
-                                                                                            if let Some(label) = taken_by {
-                                                                                                this.shortcut_message = Some(format!(
-                                                                                                    "That shortcut is already used by \"{}\". Pick a different key.",
-                                                                                                    label
-                                                                                                ));
-                                                                                                this.finish_recording_shortcut(cx);
-                                                                                                return;
-                                                                                            }
-                                                                                            this.shortcut_message = None;
-                                                                                            // Disable the previous key so this action
-                                                                                            // doesn't keep responding to both.
-                                                                                            let old_key = capture_input.read(cx).value().to_string();
-                                                                                            Self::shadow_shortcut_key(&old_key, &combo, cx);
-                                                                                            capture_input.update(cx, |state, cx| {
-                                                                                                state.set_value(combo.clone(), window, cx);
-                                                                                            });
-                                                                                            Self::save_shortcut(&capture_spec, &capture_input, cx);
-                                                                                            this.finish_recording_shortcut(cx);
-                                                                                        }))
-                                                                                })
-                                                                                .on_mouse_down(
-                                                                                    MouseButton::Left,
-                                                                                    cx.listener(move |this, _, window, cx| {
-                                                                                        this.start_recording_shortcut(start_id, window, cx);
-                                                                                    }),
-                                                                                )
-                                                                                .child(label_text),
-                                                                        )
-                                                                        .child(
-                                                                            Button::new(SharedString::from(format!("kb-reset-{}", spec.id)))
-                                                                                .icon(IconName::Undo2)
-                                                                                .tooltip("Reset to default")
-                                                                                .ghost()
-                                                                                .xsmall()
-                                                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                                                    let default_key = reset_spec.default_key.to_string();
-                                                                                    // Disable the current key before reverting to default.
-                                                                                    let old_key = reset_input.read(cx).value().to_string();
-                                                                                    Self::shadow_shortcut_key(&old_key, &default_key, cx);
-                                                                                    reset_input.update(cx, |state, cx| {
-                                                                                        state.set_value(default_key, window, cx);
-                                                                                    });
-                                                                                    Self::save_shortcut(&reset_spec, &reset_input, cx);
-                                                                                    if this.recording_shortcut.as_deref() == Some(reset_spec.id) {
-                                                                                        this.finish_recording_shortcut(cx);
-                                                                                    } else {
-                                                                                        cx.notify();
-                                                                                    }
-                                                                                })),
-                                                                        ),
-                                                                )
-                                                }))
-                                                )
-                                                .when_some(self.shortcut_message.clone(), |el, message| {
-                                                    el.child(
-                                                        div()
-                                                            .mt_2()
-                                                            .text_xs()
-                                                            .text_color(cx.theme().danger)
-                                                            .child(message),
-                                                    )
-                                                })
-                                                .child(div().mt_6().text_lg().font_weight(gpui::FontWeight::BOLD).child("Appearance"))
-                                                .child(
-                                                    v_flex().gap_4().mt_2()
-                                                        .child(
-                                                            h_flex().justify_between().child("Theme").child({
-                                                                let mut themes = self.theme_list.clone();
-                                                                if themes.is_empty() {
-                                                                    // Fallback if not loaded
-                                                                    themes = ThemeRegistry::global(cx)
-                                                                        .themes()
-                                                                        .keys()
-                                                                        .map(|s| s.to_string())
-                                                                        .collect();
-                                                                    themes.sort();
-                                                                }
-                                                                let current = Theme::global(cx).theme_name().to_string();
-                                                                DropdownButton::new("settings-theme-picker")
-                                                                    .button(
-                                                                        Button::new("theme-btn")
-                                                                            .label(current.clone())
-                                                                            .outline()
-                                                                    )
-                                                                    .dropdown_menu(move |mut menu, _, _| {
-                                                                        menu = menu.scrollable(true);
-                                                                        for name in themes.clone() {
-                                                                            let is_current = name == current;
-                                                                            let name_clone = name.clone();
-                                                                            menu = menu.item(
-                                                                                PopupMenuItem::new(name.clone())
-                                                                                    .checked(is_current)
-                                                                                    .on_click(move |_, _, cx: &mut App| {
-                                                                                        if let Some(cfg) = ThemeRegistry::global(cx).themes().get(name_clone.as_str()).cloned() {
-                                                                                            Theme::global_mut(cx).apply_config(&cfg);
-                                                                                            AppView::apply_user_font_settings_app(cx);
-                                                                                            cx.refresh_windows();
-                                                                                            let _ = crate::storage::save_theme_name(&name_clone);
-                                                                                        }
-                                                                                    })
-                                                                            );
-                                                                        }
-                                                                        menu
-                                                                    })
-                                                            })
-                                                        )
-                                                        .child(
-                                                            h_flex()
-                                                                .justify_between()
-                                                                .items_center()
-                                                                .gap_4()
-                                                                .child("UI Font")
-                                                                .child(
-                                                                    Button::new("ui-font-btn")
-                                                                        .label(self.selected_font_family.clone())
-                                                                        .outline()
-                                                                        .on_click(cx.listener(|this, _, window, cx| {
-                                                                            this.open_font_picker(window, cx);
-                                                                        })),
-                                                                )
-                                                        )
-                                                        .child(
-                                                            h_flex()
-                                                                .justify_between()
-                                                                .items_center()
-                                                                .gap_4()
-                                                                .child("UI Font Size")
-                                                                .child(
-                                                                    h_flex()
-                                                                        .items_center()
-                                                                        .gap_3()
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(cx.theme().muted_foreground)
-                                                                                .child("10"),
-                                                                        )
-                                                                        .child(
-                                                                            div().w(px(160.)).child(
-                                                                                gpui_component::slider::Slider::new(
-                                                                                    &self.font_size_slider,
-                                                                                ),
-                                                                            ),
-                                                                        )
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(cx.theme().muted_foreground)
-                                                                                .child("24"),
-                                                                        )
-                                                                        .child(
-                                                                            Input::new(&self.font_size_input)
-                                                                                .w(px(64.))
-                                                                                .h(px(30.)),
-                                                                        ),
-                                                                )
-                                                        )
-                                                )
-                                        )
-                                )
-                        )
-                )
+                el.child(self.render_settings_modal(settings_w, settings_h, window, cx))
             })
-            // ── Folder settings modal (full-app centered overlay) ──────────
             .when(self.collection_panel.read(cx).folder_settings_open(), |el| {
-                let modal = self
-                    .collection_panel
-                    .update(cx, |panel, cx| panel.folder_settings_modal(window, cx));
+                let modal = self.collection_panel.update(cx, |p, cx| p.folder_settings_modal(window, cx));
                 el.child(modal)
             })
-            .children(dialog_layer)
-            .children(notification_layer)
+    }
+}
+
+impl AppView {
+    fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.maximized_panel != MaximizedPanel::None {
+            self.maximized_panel = MaximizedPanel::None;
+        } else {
+            let cf  = self.collection_panel.read(cx).focus_handle(cx);
+            let rf  = self.request_panel.read(cx).focus_handle(cx);
+            let rsf = self.response_panel.read(cx).focus_handle(cx);
+            self.maximized_panel = if cf.contains_focused(window, cx) {
+                MaximizedPanel::Collection
+            } else if rf.contains_focused(window, cx) {
+                MaximizedPanel::Request
+            } else if rsf.contains_focused(window, cx) {
+                MaximizedPanel::Response
+            } else {
+                let mut req_focused = false;
+                let mut res_focused = false;
+                self.request_panel.update(cx, |p, cx| { req_focused = p.has_focus(window, cx); });
+                self.response_panel.update(cx, |p, cx| { res_focused = p.has_focus(window, cx); });
+                if req_focused { MaximizedPanel::Request }
+                else if res_focused { MaximizedPanel::Response }
+                else { MaximizedPanel::Response }
+            };
+        }
+        cx.notify();
+    }
+
+    fn render_main_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let panels: AnyElement = match self.maximized_panel {
+            MaximizedPanel::Collection => self.collection_panel.clone().into_any_element(),
+            MaximizedPanel::Request    => self.request_panel.clone().into_any_element(),
+            MaximizedPanel::Response   => self.response_panel.clone().into_any_element(),
+            MaximizedPanel::None => match self.response_layout {
+                ResponseLayout::Row => h_resizable("main-panels")
+                    .with_state(&self.row_resize_state)
+                    .child(resizable_panel().size(px(260.)).size_range(px(180.)..px(400.)).child(self.collection_panel.clone()))
+                    .child(resizable_panel().size(px(520.)).size_range(px(340.)..px(900.)).child(self.request_panel.clone()))
+                    .child(resizable_panel().size(px(640.)).size_range(px(360.)..px(1600.)).child(self.response_panel.clone()))
+                    .into_any_element(),
+                ResponseLayout::Column => h_resizable("main-panels-col")
+                    .with_state(&self.column_resize_state)
+                    .child(resizable_panel().size(px(260.)).size_range(px(180.)..px(400.)).child(self.collection_panel.clone()))
+                    .child(
+                        resizable_panel().size(px(1000.)).size_range(px(620.)..px(2200.)).child(
+                            v_resizable("req-resp-col")
+                                .with_state(&self.resize_state_v)
+                                .child(resizable_panel().size(px(350.)).size_range(px(200.)..px(600.)).child(self.request_panel.clone()))
+                                .child(resizable_panel().child(self.response_panel.clone())),
+                        ),
+                    )
+                    .into_any_element(),
+            },
+        };
+        v_flex()
+            .size_full()
+            .child(self.top_bar.clone())
+            .child(self.render_tab_strip(window, cx))
+            .child(div().flex_1().overflow_hidden().child(panels))
     }
 }

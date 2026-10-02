@@ -1,9 +1,10 @@
 #![allow(unused_imports)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use instant::Instant;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
@@ -11,6 +12,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
     tab::{Tab, TabBar},
+    tooltip::Tooltip,
     v_flex,
 };
 
@@ -20,6 +22,8 @@ use silvapi_core::models::{
 };
 
 use super::*;
+
+pub(super) const URL_INPUT_HEIGHT_PX: f32 = 32.0;
 
 impl RequestPanel {
     pub(super) fn make_url_variable_row(
@@ -323,17 +327,7 @@ impl RequestPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let method = self
-            .app_state
-            .read(cx)
-            .active_request
-            .as_ref()
-            .map(|r| r.method.clone())
-            .unwrap_or(HttpMethod::GET);
-
         let is_loading = self.app_state.read(cx).is_loading;
-        let app_state_for_menu = self.app_state.clone();
-        let method_label = method.as_str().to_string();
 
         h_flex()
             .w_full()
@@ -345,65 +339,12 @@ impl RequestPanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                DropdownButton::new("method-dropdown")
-                    .button(
-                        Button::new("method-btn")
-                            .label(method_label)
-                            .ghost()
-                            .small(),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        let as1 = app_state_for_menu.clone();
-                        let as2 = app_state_for_menu.clone();
-                        let as3 = app_state_for_menu.clone();
-                        let as4 = app_state_for_menu.clone();
-                        let as5 = app_state_for_menu.clone();
-                        menu.item(PopupMenuItem::new("GET").on_click(move |_, _, cx| {
-                            as1.update(cx, |s, cx| {
-                                if let Some(r) = &mut s.active_request {
-                                    r.method = HttpMethod::GET;
-                                }
-                                s.save_active_request();
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
-                        .item(PopupMenuItem::new("POST").on_click(move |_, _, cx| {
-                            as2.update(cx, |s, cx| {
-                                if let Some(r) = &mut s.active_request {
-                                    r.method = HttpMethod::POST;
-                                }
-                                s.save_active_request();
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
-                        .item(PopupMenuItem::new("PUT").on_click(move |_, _, cx| {
-                            as3.update(cx, |s, cx| {
-                                if let Some(r) = &mut s.active_request {
-                                    r.method = HttpMethod::PUT;
-                                }
-                                s.save_active_request();
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
-                        .item(PopupMenuItem::new("PATCH").on_click(move |_, _, cx| {
-                            as4.update(cx, |s, cx| {
-                                if let Some(r) = &mut s.active_request {
-                                    r.method = HttpMethod::PATCH;
-                                }
-                                s.save_active_request();
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
-                        .item(PopupMenuItem::new("DELETE").on_click(move |_, _, cx| {
-                            as5.update(cx, |s, cx| {
-                                if let Some(r) = &mut s.active_request {
-                                    r.method = HttpMethod::DELETE;
-                                }
-                                s.save_active_request();
-                                cx.emit(AppEvent::WorkspaceChanged);
-                            });
-                        }))
-                    }),
+                div()
+                    .w(px(110.))
+                    .child(
+                        Select::new(&self.method_select)
+                            .small()
+                    ),
             )
             .child(self.render_url_field(window, cx))
             .child(if is_loading {
@@ -421,6 +362,7 @@ impl RequestPanel {
             } else {
                 Button::new("send-btn")
                     .label("Send")
+                    .icon(IconName::Play)
                     .primary()
                     .small()
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -456,8 +398,12 @@ impl RequestPanel {
             .relative()
             .flex_1()
             .min_w(px(0.))
-            .h(px(32.))
-            .child(Input::new(&self.url_input).w_full())
+            .h(px(URL_INPUT_HEIGHT_PX))
+            .child(
+                Input::new(&self.url_input)
+                    .w_full()
+                    .h_full()
+            )
             .when(!is_focused, |el| {
                 el.child(
                     div()
@@ -506,7 +452,7 @@ impl RequestPanel {
 
                     if Self::is_url_variable_name(name) {
                         if text_start < i {
-                            segments.push(Self::render_url_text_segment(&url[text_start..i]));
+                            segments.push(Self::render_url_text_segment(&url[text_start..i], cx));
                         }
                         segments.push(self.render_inline_url_variable(name, chip_ix, cx));
                         chip_ix += 1;
@@ -535,7 +481,7 @@ impl RequestPanel {
 
                 if name_end > name_start {
                     if text_start < i {
-                        segments.push(Self::render_url_text_segment(&url[text_start..i]));
+                        segments.push(Self::render_url_text_segment(&url[text_start..i], cx));
                     }
                     segments.push(self.render_inline_url_path_param(
                         &url[name_start..name_end],
@@ -556,52 +502,20 @@ impl RequestPanel {
         }
 
         if text_start < url.len() {
-            segments.push(Self::render_url_text_segment(&url[text_start..]));
+            segments.push(Self::render_url_text_segment(&url[text_start..], cx));
         }
 
         segments
     }
 
-    pub(super) fn render_url_text_segment(text: &str) -> AnyElement {
+    pub(super) fn render_url_text_segment(text: &str, cx: &App) -> AnyElement {
         div()
             .flex_shrink_0()
             .text_sm()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .whitespace_nowrap()
             .child(Self::input_line(text))
             .into_any_element()
-    }
-
-    pub(super) fn render_url_chip_tooltip(
-        tooltip: String,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        deferred(
-            anchored()
-                .anchor(Anchor::TopLeft)
-                .snap_to_window_with_margin(px(8.))
-                .offset(point(px(0.), px(22.)))
-                .child(
-                    div()
-                        .occlude()
-                        .max_w(px(360.))
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.popover)
-                        .text_color(cx.theme().popover_foreground)
-                        .shadow_lg()
-                        .text_xs()
-                        .font_family("monospace")
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(tooltip),
-                ),
-        )
-        .with_priority(2)
     }
 
     pub(super) fn render_inline_url_variable(
@@ -611,17 +525,11 @@ impl RequestPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let variable_name = name.to_string();
-        let hover_name = variable_name.clone();
-        let is_hovered = self.hovered_url_variable.as_deref() == Some(name);
-        let tooltip = if is_hovered {
-            let value = self
-                .variable_value(name, cx)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "No value".to_string());
-            Some(format!("{name} = {value}"))
-        } else {
-            None
-        };
+        let value = self
+            .variable_value(name, cx)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "No value".to_string());
+        let tip = format!("{name} = {value}");
 
         div()
             .id(SharedString::from(format!(
@@ -637,20 +545,9 @@ impl RequestPanel {
             .bg(cx.theme().primary.opacity(0.14))
             .text_xs()
             .text_color(cx.theme().primary)
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .whitespace_nowrap()
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
-                if *hovered {
-                    this.hovered_url_variable = Some(hover_name.clone());
-                    this.hovered_url_path_param = None;
-                } else if this.hovered_url_variable.as_deref() == Some(hover_name.as_str()) {
-                    this.hovered_url_variable = None;
-                }
-                cx.notify();
-            }))
-            .when_some(tooltip, |el, tooltip| {
-                el.child(Self::render_url_chip_tooltip(tooltip, cx))
-            })
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .child(variable_name)
             .into_any_element()
     }
@@ -662,17 +559,11 @@ impl RequestPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let param_name = name.to_string();
-        let hover_name = param_name.clone();
-        let is_hovered = self.hovered_url_path_param.as_deref() == Some(name);
-        let tooltip = if is_hovered {
-            let value = self
-                .path_param_value(name, cx)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "No value".to_string());
-            Some(format!(":{name} = {value}"))
-        } else {
-            None
-        };
+        let value = self
+            .path_param_value(name, cx)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "No value".to_string());
+        let tip = format!(":{name} = {value}");
 
         div()
             .id(SharedString::from(format!(
@@ -688,20 +579,9 @@ impl RequestPanel {
             .bg(cx.theme().muted.opacity(0.24))
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .whitespace_nowrap()
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
-                if *hovered {
-                    this.hovered_url_path_param = Some(hover_name.clone());
-                    this.hovered_url_variable = None;
-                } else if this.hovered_url_path_param.as_deref() == Some(hover_name.as_str()) {
-                    this.hovered_url_path_param = None;
-                }
-                cx.notify();
-            }))
-            .when_some(tooltip, |el, tooltip| {
-                el.child(Self::render_url_chip_tooltip(tooltip, cx))
-            })
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .child(format!(":{param_name}"))
             .into_any_element()
     }

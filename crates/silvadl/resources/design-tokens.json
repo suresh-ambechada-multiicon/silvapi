@@ -1,0 +1,14 @@
+{
+  "window_width": 1180.0,
+  "window_height": 780.0,
+  "content_max_width": 1320.0,
+  "page_padding": 24.0,
+  "section_padding": 18.0,
+  "control_gap": 10.0,
+  "section_gap": 18.0,
+  "corner_radius": 10.0,
+  "title_size": 26.0,
+  "body_size": 14.0,
+  "caption_size": 12.0,
+  "log_height": 210.0
+}

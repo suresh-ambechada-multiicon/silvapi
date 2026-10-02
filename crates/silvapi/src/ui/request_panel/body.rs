@@ -1,14 +1,15 @@
 #![allow(unused_imports)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use instant::Instant;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, Input, InputEvent, InputState},
     menu::PopupMenuItem,
     tab::{Tab, TabBar},
     v_flex,
@@ -69,6 +70,20 @@ impl RequestPanel {
             s.set_value(Self::input_line(&part.value), window, cx)
         });
 
+        let kind_idx = match part.kind {
+            FormDataPartKind::Text => 0,
+            FormDataPartKind::File => 1,
+        };
+        let kind_select = cx.new(|cx| {
+            SelectState::new(
+                vec!["Text", "File"],
+                Some(IndexPath::new(kind_idx)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+
         let name_sub = cx.subscribe_in(&name, window, |this, _, ev: &InputEvent, window, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.sync_active_request(window, cx);
@@ -79,13 +94,33 @@ impl RequestPanel {
                 this.sync_active_request(window, cx);
             }
         });
+
+        let part_id = part.id.clone();
+        let kind_sub = cx.subscribe_in(&kind_select, window, {
+            let part_id = part_id.clone();
+            move |this, _, ev: &SelectEvent<Vec<&'static str>>, window, cx| {
+                if let SelectEvent::Confirm(Some(kind_str)) = ev {
+                    let kind = match *kind_str {
+                        "File" => FormDataPartKind::File,
+                        _ => FormDataPartKind::Text,
+                    };
+                    Self::update_multipart_part(&this.app_state, &part_id, cx, |part| {
+                        part.kind = kind;
+                    });
+                    this.sync_active_request(window, cx);
+                }
+            }
+        });
+
         self.row_subs.push(name_sub);
         self.row_subs.push(value_sub);
+        self.row_subs.push(kind_sub);
 
         MultipartRow {
             id: part.id.clone(),
             name,
             value,
+            kind_select,
         }
     }
 
@@ -112,36 +147,6 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn body_menu_item(
-        app_state: Entity<AppState>,
-        current: &BodyType,
-        target: BodyType,
-        label: &'static str,
-    ) -> PopupMenuItem {
-        let selected = current == &target;
-        PopupMenuItem::new(label)
-            .checked(selected)
-            .on_click(move |_, _, cx| {
-                app_state.update(cx, |state, cx| {
-                    if let Some(req) = &mut state.active_request {
-                        req.body.body_type = target.clone();
-                        if matches!(target, BodyType::UrlEncoded) && req.body.urlencoded.is_empty()
-                        {
-                            req.body.urlencoded = Self::parse_urlencoded_content(&req.body.content);
-                            if req.body.urlencoded.is_empty() {
-                                req.body.urlencoded.push(KeyValue::empty());
-                            }
-                        }
-                        if matches!(target, BodyType::FormData) && req.body.form_data.is_empty() {
-                            req.body.form_data.push(FormDataPart::empty());
-                        }
-                    }
-                    state.save_active_request();
-                    cx.emit(AppEvent::WorkspaceChanged);
-                    cx.emit(AppEvent::SaveNeeded);
-                });
-            })
-    }
 
     pub(super) fn render_body_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body_type = self
@@ -151,10 +156,6 @@ impl RequestPanel {
             .as_ref()
             .map(|r| r.body.body_type.clone())
             .unwrap_or(BodyType::None);
-        let body_label = Self::body_type_label(&body_type);
-        let menu_body_type = body_type.clone();
-        let app_state_for_menu = self.app_state.clone();
-
         v_flex()
             .size_full()
             .child(
@@ -165,34 +166,12 @@ impl RequestPanel {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
-                        DropdownButton::new("body-type-dropdown")
-                            .button(
-                                Button::new("body-type-btn")
-                                    .label(body_label)
-                                    .ghost()
-                                    .xsmall(),
-                            )
-                            .dropdown_menu(move |menu, _, _| {
-                                let item = |target, label| {
-                                    Self::body_menu_item(
-                                        app_state_for_menu.clone(),
-                                        &menu_body_type,
-                                        target,
-                                        label,
-                                    )
-                                };
-                                menu.item(PopupMenuItem::label("Form Data"))
-                                    .item(item(BodyType::UrlEncoded, "Url Encoded"))
-                                    .item(item(BodyType::FormData, "Multi-Part"))
-                                    .separator()
-                                    .item(PopupMenuItem::label("Text Content"))
-                                    .item(item(BodyType::Json, "JSON"))
-                                    .item(item(BodyType::Raw, "Other"))
-                                    .separator()
-                                    .item(PopupMenuItem::label("Other"))
-                                    .item(item(BodyType::BinaryFile, "Binary File"))
-                                    .item(item(BodyType::None, "No Body"))
-                            }),
+                        div()
+                            .w(px(130.))
+                            .child(
+                                Select::new(&self.body_type_select)
+                                    .small()
+                            ),
                     )
                     .when(Self::is_text_body_type(&body_type), |el| {
                         let wrap_on = self.body_wrap;
@@ -217,8 +196,6 @@ impl RequestPanel {
                                             let wrap = this.body_wrap;
                                             this.body_editor.update(cx, |editor, cx| {
                                                 editor.set_soft_wrap(wrap, window, cx);
-                                                let value = editor.value().to_string();
-                                                editor.set_value(value, window, cx);
                                             });
                                             cx.notify();
                                         })),
@@ -259,8 +236,8 @@ impl RequestPanel {
                 div()
                     .flex_1()
                     .min_w(px(0.))
+                    .min_h(px(0.))
                     .overflow_hidden()
-                    .p_1()
                     .when(matches!(body_type, BodyType::FormData), |el| {
                         el.child(self.render_multipart_form(cx))
                     })
@@ -268,7 +245,14 @@ impl RequestPanel {
                         el.child(self.render_urlencoded_form(cx))
                     })
                     .when(Self::is_text_body_type(&body_type), |el| {
-                        el.child(Input::new(&self.body_editor).h_full().w_full())
+                        el.child(
+                            Editor::new(&self.body_editor)
+                                .text_size(cx.theme().font_size)
+                                .h(relative(1.0))
+                                .bordered(false)
+                                .appearance(false)
+                                .context_menu(crate::ui::editor_utils::editor_context_menu),
+                        )
                     })
                     .when(
                         !Self::is_text_body_type(&body_type)
@@ -437,11 +421,6 @@ impl RequestPanel {
         let row_id = row.id.clone();
         let enabled = part.enabled;
         let kind = part.kind.clone();
-        let kind_label = match kind {
-            FormDataPartKind::Text => "Text",
-            FormDataPartKind::File => "File",
-        };
-        let is_text = matches!(kind, FormDataPartKind::Text);
         let is_file = matches!(kind, FormDataPartKind::File);
         let app_state_for_menu = self.app_state.clone();
         let menu_row_id = row.id.clone();
@@ -530,18 +509,23 @@ impl RequestPanel {
                 )
             })
             .child(
-                DropdownButton::new(format!("multipart-kind-{}", i))
+                div()
+                    .w(px(85.))
+                    .child(
+                        Select::new(&row.kind_select)
+                            .small()
+                    ),
+            )
+            .child(
+                DropdownButton::new(format!("multipart-opts-{}", i))
                     .button(
-                        Button::new(format!("multipart-kind-btn-{}", i))
-                            .label(kind_label)
+                        Button::new(format!("multipart-opts-btn-{}", i))
+                            .icon(IconName::Ellipsis)
                             .ghost()
-                            .xsmall(),
+                            .xsmall()
+                            .tooltip("Options"),
                     )
                     .dropdown_menu(move |menu, _, _| {
-                        let text_state = app_state_for_menu.clone();
-                        let text_id = menu_row_id.clone();
-                        let file_state = app_state_for_menu.clone();
-                        let file_id = menu_row_id.clone();
                         let set_content_type_state = app_state_for_menu.clone();
                         let set_content_type_id = menu_row_id.clone();
                         let unset_content_type_state = app_state_for_menu.clone();
@@ -549,22 +533,7 @@ impl RequestPanel {
                         let unset_file_state = app_state_for_menu.clone();
                         let unset_file_id = menu_row_id.clone();
 
-                        menu.item(PopupMenuItem::new("Text").checked(is_text).on_click(
-                            move |_, _, cx| {
-                                Self::update_multipart_part(&text_state, &text_id, cx, |part| {
-                                    part.kind = FormDataPartKind::Text;
-                                });
-                            },
-                        ))
-                        .item(PopupMenuItem::new("File").checked(is_file).on_click(
-                            move |_, _, cx| {
-                                Self::update_multipart_part(&file_state, &file_id, cx, |part| {
-                                    part.kind = FormDataPartKind::File;
-                                });
-                            },
-                        ))
-                        .separator()
-                        .item(
+                        menu.item(
                             PopupMenuItem::new("Set Content-Type").on_click(move |_, _, cx| {
                                 Self::update_multipart_part(
                                     &set_content_type_state,
@@ -773,7 +742,7 @@ impl RequestPanel {
                         icon: silvapi_core::models::TimelineIcon::Info,
                         detail: None,
                     });
-                    cx.emit(AppEvent::ResponseReceived);
+                    cx.emit(AppEvent::StreamChunk(body));
                 }
             });
         });

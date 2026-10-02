@@ -1,10 +1,11 @@
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
+    separator::Separator,
     v_flex,
 };
 
@@ -176,7 +177,7 @@ impl Render for VariablesDialog {
                                 this.save(cx);
                                 window.close_dialog(cx);
                                 window.push_notification(
-                                    gpui_component::notification::Notification::success(
+                                    gpui_kit::component::notification::Notification::success(
                                         "Variables saved successfully!",
                                     ),
                                     cx,
@@ -219,8 +220,9 @@ impl Render for TopBar {
             )
             .child(div().flex_1())
             .child(
-                Button::new("import-openapi-btn")
-                    .label("Import OpenAPI")
+                Button::new("import-collection-btn")
+                    .icon(IconName::FolderOpen)
+                    .label("Import Collection")
                     .ghost()
                     .small()
                     .on_click({
@@ -232,13 +234,13 @@ impl Render for TopBar {
                                 files: true,
                                 directories: false,
                                 multiple: false,
-                                prompt: Some("Select OpenAPI spec (JSON or YAML)".into()),
+                                prompt: Some("Select OpenAPI spec or Postman collection (JSON or YAML)".into()),
                             });
 
                             cx.spawn(async move |_, cx| match rx.await {
                                 Ok(Ok(Some(paths))) => {
                                     if let Some(path) = paths.first() {
-                                        crate::ui::top_bar::handle_openapi_file(
+                                        crate::ui::top_bar::handle_collection_file(
                                             path,
                                             &app_state,
                                             cx,
@@ -249,9 +251,9 @@ impl Render for TopBar {
                                 Ok(Err(e)) => {
                                     let msg = e.to_string();
                                     if let Some(path) =
-                                        fallback_file_picker("Select OpenAPI spec (JSON or YAML)")
+                                        fallback_file_picker("Select OpenAPI spec or Postman collection (JSON or YAML)")
                                     {
-                                        crate::ui::top_bar::handle_openapi_file(
+                                        crate::ui::top_bar::handle_collection_file(
                                             &path,
                                             &app_state,
                                             cx,
@@ -272,89 +274,9 @@ impl Render for TopBar {
                                 Err(e) => {
                                     let msg = e.to_string();
                                     if let Some(path) =
-                                        fallback_file_picker("Select OpenAPI spec (JSON or YAML)")
+                                        fallback_file_picker("Select OpenAPI spec or Postman collection (JSON or YAML)")
                                     {
-                                        crate::ui::top_bar::handle_openapi_file(
-                                            &path,
-                                            &app_state,
-                                            cx,
-                                            window_handle,
-                                        );
-                                    } else {
-                                        let _ = cx.update_window(
-                                            window_handle,
-                                            move |_, window, cx| {
-                                                window.push_notification(
-                                                    format!("Native dialog failed: {}", msg),
-                                                    cx,
-                                                );
-                                            },
-                                        );
-                                    }
-                                }
-                                _ => {}
-                            })
-                            .detach();
-                        })
-                    }),
-            )
-            .child(
-                Button::new("import-postman-btn")
-                    .label("Import Postman")
-                    .ghost()
-                    .small()
-                    .on_click({
-                        let app_state = app_state.clone();
-                        cx.listener(move |_this, _, window, cx| {
-                            let window_handle = window.window_handle();
-                            let app_state = app_state.clone();
-                            let rx = cx.prompt_for_paths(PathPromptOptions {
-                                files: true,
-                                directories: false,
-                                multiple: false,
-                                prompt: Some("Select Postman Collection JSON".into()),
-                            });
-
-                            cx.spawn(async move |_, cx| match rx.await {
-                                Ok(Ok(Some(paths))) => {
-                                    if let Some(path) = paths.first() {
-                                        crate::ui::top_bar::handle_postman_file(
-                                            path,
-                                            &app_state,
-                                            cx,
-                                            window_handle,
-                                        );
-                                    }
-                                }
-                                Ok(Err(e)) => {
-                                    let msg = e.to_string();
-                                    if let Some(path) =
-                                        fallback_file_picker("Select Postman Collection JSON")
-                                    {
-                                        crate::ui::top_bar::handle_postman_file(
-                                            &path,
-                                            &app_state,
-                                            cx,
-                                            window_handle,
-                                        );
-                                    } else {
-                                        let _ = cx.update_window(
-                                            window_handle,
-                                            move |_, window, cx| {
-                                                window.push_notification(
-                                                    format!("Native dialog failed: {}", msg),
-                                                    cx,
-                                                );
-                                            },
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    let msg = e.to_string();
-                                    if let Some(path) =
-                                        fallback_file_picker("Select Postman Collection JSON")
-                                    {
-                                        crate::ui::top_bar::handle_postman_file(
+                                        crate::ui::top_bar::handle_collection_file(
                                             &path,
                                             &app_state,
                                             cx,
@@ -420,7 +342,8 @@ impl Render for TopBar {
                     })),
             )
             .when(show_window_controls, |this| {
-                this.child(
+                this.child(Separator::vertical().h(px(16.)))
+                    .child(
                     h_flex()
                         .ml_1()
                         .gap_1()
@@ -480,24 +403,28 @@ fn fallback_file_picker(title: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-pub(crate) fn handle_openapi_file(
+pub(crate) fn handle_collection_file(
     path: &std::path::Path,
     app_state: &Entity<AppState>,
     cx: &mut AsyncApp,
     window_handle: AnyWindowHandle,
 ) {
     match std::fs::read_to_string(path) {
-        Ok(content) => match silvapi_core::import::import_openapi(&content) {
-            Ok(col) => {
+        Ok(content) => match silvapi_core::import::import_collection(&content) {
+            Ok((col, format_name)) => {
                 let name = col.name.clone();
+                let count = col.items.len();
                 let _ = cx.update(|cx| {
                     app_state.update(cx, |state, cx| {
                         state.import_collection(col);
                         cx.emit(AppEvent::WorkspaceChanged);
                     });
                 });
-                let _ = cx.update_window(window_handle, |_, window, cx| {
-                    window.push_notification(format!("Imported: {}", name), cx);
+                let _ = cx.update_window(window_handle, move |_, window, cx| {
+                    window.push_notification(
+                        format!("Imported {} ({}): {} items", name, format_name, count),
+                        cx,
+                    );
                 });
             }
             Err(e) => {
@@ -514,36 +441,21 @@ pub(crate) fn handle_openapi_file(
     }
 }
 
+pub(crate) fn handle_openapi_file(
+    path: &std::path::Path,
+    app_state: &Entity<AppState>,
+    cx: &mut AsyncApp,
+    window_handle: AnyWindowHandle,
+) {
+    handle_collection_file(path, app_state, cx, window_handle);
+}
+
 pub(crate) fn handle_postman_file(
     path: &std::path::Path,
     app_state: &Entity<AppState>,
     cx: &mut AsyncApp,
     window_handle: AnyWindowHandle,
 ) {
-    match std::fs::read_to_string(path) {
-        Ok(content) => match silvapi_core::import::import_postman(&content) {
-            Ok(col) => {
-                let name = col.name.clone();
-                let _ = cx.update(|cx| {
-                    app_state.update(cx, |state, cx| {
-                        state.import_collection(col);
-                        cx.emit(AppEvent::WorkspaceChanged);
-                    });
-                });
-                let _ = cx.update_window(window_handle, |_, window, cx| {
-                    window.push_notification(format!("Imported: {}", name), cx);
-                });
-            }
-            Err(e) => {
-                let _ = cx.update_window(window_handle, |_, window, cx| {
-                    window.push_notification(format!("Import error: {}", e), cx);
-                });
-            }
-        },
-        Err(e) => {
-            let _ = cx.update_window(window_handle, |_, window, cx| {
-                window.push_notification(format!("Failed to read file: {}", e), cx);
-            });
-        }
-    }
+    handle_collection_file(path, app_state, cx, window_handle);
 }
+

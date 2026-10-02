@@ -1,13 +1,13 @@
 #![allow(unused_imports)]
 use std::collections::HashSet;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, Input, InputEvent, InputState},
     menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement,
@@ -91,8 +91,8 @@ impl ResponsePanel {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.headers_soft_wrap = !this.headers_soft_wrap;
                                     let wrap = this.headers_soft_wrap;
-                                    this.headers_editor.update(cx, |state, cx| {
-                                        state.set_soft_wrap(wrap, window, cx);
+                                    this.headers_editor.update(cx, |editor, cx| {
+                                        editor.set_soft_wrap(wrap, window, cx);
                                     });
                                     cx.notify();
                                 })),
@@ -118,7 +118,15 @@ impl ResponsePanel {
                     .id("resp-headers-editor")
                     .flex_1()
                     .p_1()
-                    .child(Input::new(&self.headers_editor).h_full().w_full())
+                    .child(
+                        Editor::new(&self.headers_editor)
+                            .text_size(cx.theme().font_size)
+                            .h(relative(1.0))
+                            .bordered(false)
+                            .appearance(false)
+                            .readonly(true)
+                            .context_menu(crate::ui::editor_utils::readonly_editor_context_menu),
+                    )
                     .into_any_element()
             } else {
                 table.into_any_element()

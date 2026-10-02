@@ -1,21 +1,63 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use instant::Instant;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
-    ActiveTheme, IconName, Sizable as _,
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
+    ActiveTheme, IconName, IndexPath, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{EditorState, Input, InputEvent, InputState},
+    select::{Select, SelectEvent, SelectState},
     tab::{Tab, TabBar},
     v_flex,
 };
 
 use crate::state::{AppEvent, AppState};
-use silvapi_core::models::{AuthType, BodyType};
+use silvapi_core::models::{
+    AuthType, BodyType, FormDataPart, HttpMethod, KeyValue,
+};
 
 const MAX_RESPONSE_HISTORY_PER_REQUEST: usize = 20;
+
+pub(crate) const HTTP_METHODS: [&'static str; 7] = [
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
+];
+
+pub(crate) const BODY_TYPES: [&'static str; 6] = [
+    "No Body", "JSON", "Multi-Part", "Url Encoded", "Other", "Binary File",
+];
+
+pub(crate) const AUTH_TYPES: [&'static str; 7] = [
+    "No Auth", "Bearer Token", "Basic Auth", "API Key", "AWS Signature", "JWT Bearer", "OAuth 2.0",
+];
+
+pub(crate) const API_KEY_PLACEMENTS: [&'static str; 2] = [
+    "Header", "Query Param",
+];
+
+pub(crate) const JWT_ALGORITHMS: [&'static str; 6] = [
+    "HS256", "HS384", "HS512", "RS256", "RS384", "RS512",
+];
+
+pub(crate) const OAUTH_GRANTS: [&'static str; 4] = [
+    "Authorization Code", "Implicit", "Resource Owner Password Credential", "Client Credentials",
+];
+
+pub(crate) const OAUTH_TOKEN_TARGETS: [&'static str; 2] = [
+    "access_token", "id_token",
+];
+
+pub(crate) const OAUTH_RESPONSE_TYPES: [&'static str; 3] = [
+    "Access Token", "ID Token", "Access Token + ID Token",
+];
+
+pub(crate) const OAUTH_SEND_CREDENTIALS: [&'static str; 2] = [
+    "In Request Body", "As Basic Authentication",
+];
+
+pub(crate) const MAX_HISTORY_RESPONSE_BODY_BYTES: usize = 1024 * 1024; // 1 MB
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestTab {
@@ -52,12 +94,19 @@ pub struct RequestPanel {
     app_state: Entity<AppState>,
     active_tab: RequestTab,
     url_input: Entity<InputState>,
-    body_editor: Entity<InputState>,
+    pub(crate) method_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) body_type_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) auth_type_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) api_key_placement_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) jwt_alg_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) oauth_grant_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) oauth_token_target_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) oauth_response_type_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) oauth_send_credentials_select: Entity<SelectState<Vec<&'static str>>>,
+    pub(crate) body_editor: Entity<EditorState>,
     body_wrap: bool,
     auth_inputs: AuthInputs,
     url_variable_rows: Vec<UrlVariableRow>,
-    hovered_url_variable: Option<String>,
-    hovered_url_path_param: Option<String>,
     path_param_keys: Vec<String>,
     // editable rows: (key_input, value_input)
     param_rows: Vec<(Entity<InputState>, Entity<InputState>, bool)>,
@@ -67,13 +116,14 @@ pub struct RequestPanel {
     row_subs: Vec<Subscription>,
     url_variable_subs: Vec<Subscription>,
     _subs: Vec<Subscription>,
-    focus_handle: gpui::FocusHandle,
+    focus_handle: gpui_kit::FocusHandle,
 }
 
-struct MultipartRow {
-    id: String,
-    name: Entity<InputState>,
-    value: Entity<InputState>,
+pub(crate) struct MultipartRow {
+    pub(crate) id: String,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) value: Entity<InputState>,
+    pub(crate) kind_select: Entity<SelectState<Vec<&'static str>>>,
 }
 
 struct UrlVariableRow {
@@ -141,8 +191,8 @@ impl AuthInputs {
     }
 }
 
-impl gpui::Focusable for RequestPanel {
-    fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
+impl gpui_kit::Focusable for RequestPanel {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -221,12 +271,10 @@ impl RequestPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
         placeholder: &'static str,
-        language: &'static str,
+        _language: &'static str,
     ) -> Entity<InputState> {
         cx.new(|cx| {
             InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor(language)
                 .placeholder(placeholder)
         })
     }
@@ -243,16 +291,398 @@ impl RequestPanel {
         })
     }
 
+    pub(crate) fn method_to_index(method: &HttpMethod) -> usize {
+        match method {
+            HttpMethod::GET => 0,
+            HttpMethod::POST => 1,
+            HttpMethod::PUT => 2,
+            HttpMethod::PATCH => 3,
+            HttpMethod::DELETE => 4,
+            HttpMethod::HEAD => 5,
+            HttpMethod::OPTIONS => 6,
+        }
+    }
+
+    pub(crate) fn index_to_method(idx: usize) -> HttpMethod {
+        match idx {
+            0 => HttpMethod::GET,
+            1 => HttpMethod::POST,
+            2 => HttpMethod::PUT,
+            3 => HttpMethod::PATCH,
+            4 => HttpMethod::DELETE,
+            5 => HttpMethod::HEAD,
+            6 => HttpMethod::OPTIONS,
+            _ => HttpMethod::GET,
+        }
+    }
+
+    pub(crate) fn body_type_to_index(b: &BodyType) -> usize {
+        match b {
+            BodyType::None => 0,
+            BodyType::Json => 1,
+            BodyType::FormData => 2,
+            BodyType::UrlEncoded => 3,
+            BodyType::Raw => 4,
+            BodyType::BinaryFile => 5,
+        }
+    }
+
+    pub(crate) fn index_to_body_type(idx: usize) -> BodyType {
+        match idx {
+            0 => BodyType::None,
+            1 => BodyType::Json,
+            2 => BodyType::FormData,
+            3 => BodyType::UrlEncoded,
+            4 => BodyType::Raw,
+            5 => BodyType::BinaryFile,
+            _ => BodyType::None,
+        }
+    }
+
+    pub(crate) fn auth_type_to_index(a: &AuthType) -> usize {
+        match a {
+            AuthType::None => 0,
+            AuthType::Bearer => 1,
+            AuthType::Basic => 2,
+            AuthType::ApiKey => 3,
+            AuthType::AwsV4 => 4,
+            AuthType::Jwt => 5,
+            AuthType::OAuth2 => 6,
+        }
+    }
+
+    pub(crate) fn index_to_auth_type(idx: usize) -> AuthType {
+        match idx {
+            0 => AuthType::None,
+            1 => AuthType::Bearer,
+            2 => AuthType::Basic,
+            3 => AuthType::ApiKey,
+            4 => AuthType::AwsV4,
+            5 => AuthType::Jwt,
+            6 => AuthType::OAuth2,
+            _ => AuthType::None,
+        }
+    }
+
+    pub(crate) fn sync_selects_from_request(
+        &self,
+        req: &silvapi_core::models::ApiRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let method_idx = Self::method_to_index(&req.method);
+        self.method_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(method_idx)), window, cx);
+        });
+
+        let body_idx = Self::body_type_to_index(&req.body.body_type);
+        self.body_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(body_idx)), window, cx);
+        });
+
+        let auth_idx = Self::auth_type_to_index(&req.auth.auth_type);
+        self.auth_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(auth_idx)), window, cx);
+        });
+
+        let api_key_idx = if req.auth.api_key_in_header { 0 } else { 1 };
+        self.api_key_placement_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(api_key_idx)), window, cx);
+        });
+
+        let jwt_alg_idx = JWT_ALGORITHMS
+            .iter()
+            .position(|&a| a.eq_ignore_ascii_case(&req.auth.jwt_algorithm))
+            .unwrap_or(0);
+        self.jwt_alg_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(jwt_alg_idx)), window, cx);
+        });
+
+        let oauth_grant_idx = OAUTH_GRANTS
+            .iter()
+            .position(|&g| g.eq_ignore_ascii_case(&req.auth.oauth_grant_type))
+            .unwrap_or(0);
+        self.oauth_grant_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(oauth_grant_idx)), window, cx);
+        });
+
+        let oauth_target_idx = OAUTH_TOKEN_TARGETS
+            .iter()
+            .position(|&t| t.eq_ignore_ascii_case(&req.auth.oauth_token_target))
+            .unwrap_or(0);
+        self.oauth_token_target_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(oauth_target_idx)), window, cx);
+        });
+
+        let oauth_resp_idx = OAUTH_RESPONSE_TYPES
+            .iter()
+            .position(|&r| r.eq_ignore_ascii_case(&req.auth.oauth_response_type))
+            .unwrap_or(0);
+        self.oauth_response_type_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(oauth_resp_idx)), window, cx);
+        });
+
+        let oauth_send_idx = OAUTH_SEND_CREDENTIALS
+            .iter()
+            .position(|&c| c.eq_ignore_ascii_case(&req.auth.oauth_send_credentials))
+            .unwrap_or(0);
+        self.oauth_send_credentials_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(oauth_send_idx)), window, cx);
+        });
+    }
+
     pub fn new(app_state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Enter URL or paste text..."));
         let body_editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor("json")
-                .soft_wrap(false)
+            EditorState::new(window, cx)
+                .language("json")
+                .line_number(true)
+                .folding(true)
                 .placeholder("Request body")
         });
+        let method_select = cx.new(|cx| {
+            SelectState::new(
+                HTTP_METHODS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let body_type_select = cx.new(|cx| {
+            SelectState::new(
+                BODY_TYPES.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let auth_type_select = cx.new(|cx| {
+            SelectState::new(
+                AUTH_TYPES.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let api_key_placement_select = cx.new(|cx| {
+            SelectState::new(
+                API_KEY_PLACEMENTS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let jwt_alg_select = cx.new(|cx| {
+            SelectState::new(
+                JWT_ALGORITHMS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let oauth_grant_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_GRANTS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let oauth_token_target_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_TOKEN_TARGETS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let oauth_response_type_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_RESPONSE_TYPES.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+        let oauth_send_credentials_select = cx.new(|cx| {
+            SelectState::new(
+                OAUTH_SEND_CREDENTIALS.to_vec(),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(false)
+        });
+
+        let method_sub = cx.subscribe_in(
+            &method_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    if let Some(idx) = HTTP_METHODS.iter().position(|m| m == val) {
+                        let method = Self::index_to_method(idx);
+                        this.app_state.update(cx, |s, cx| {
+                            if let Some(r) = &mut s.active_request {
+                                r.method = method;
+                            }
+                            s.save_active_request();
+                            cx.emit(AppEvent::WorkspaceChanged);
+                        });
+                    }
+                }
+            },
+        );
+
+        let body_type_sub = cx.subscribe_in(
+            &body_type_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    if let Some(idx) = BODY_TYPES.iter().position(|b| b == val) {
+                        let target = Self::index_to_body_type(idx);
+                        let lang = if matches!(target, BodyType::Json) {
+                            "json"
+                        } else {
+                            "text"
+                        };
+                        this.body_editor.update(cx, |state, cx| {
+                            state.set_highlighter(lang, cx);
+                        });
+                        this.app_state.update(cx, |state, cx| {
+                            if let Some(req) = &mut state.active_request {
+                                req.body.body_type = target.clone();
+                                if matches!(target, BodyType::UrlEncoded)
+                                    && req.body.urlencoded.is_empty()
+                                {
+                                    req.body.urlencoded =
+                                        Self::parse_urlencoded_content(&req.body.content);
+                                    if req.body.urlencoded.is_empty() {
+                                        req.body.urlencoded.push(KeyValue::empty());
+                                    }
+                                }
+                                if matches!(target, BodyType::FormData)
+                                    && req.body.form_data.is_empty()
+                                {
+                                    req.body.form_data.push(FormDataPart::empty());
+                                }
+                            }
+                            state.save_active_request();
+                            cx.emit(AppEvent::WorkspaceChanged);
+                            cx.emit(AppEvent::SaveNeeded);
+                        });
+                    }
+                }
+            },
+        );
+
+        let auth_type_sub = cx.subscribe_in(
+            &auth_type_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    if let Some(idx) = AUTH_TYPES.iter().position(|a| a == val) {
+                        let target = Self::index_to_auth_type(idx);
+                        this.app_state.update(cx, |state, cx| {
+                            if let Some(req) = &mut state.active_request {
+                                req.auth.auth_type = target;
+                                Self::ensure_auth_defaults(&mut req.auth);
+                            }
+                            state.save_active_request();
+                            cx.emit(AppEvent::WorkspaceChanged);
+                            cx.emit(AppEvent::SaveNeeded);
+                        });
+                    }
+                }
+            },
+        );
+
+        let api_key_sub = cx.subscribe_in(
+            &api_key_placement_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let in_header = *val == "Header";
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.api_key_in_header = in_header;
+                    });
+                }
+            },
+        );
+
+        let jwt_alg_sub = cx.subscribe_in(
+            &jwt_alg_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let alg = val.to_string();
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.jwt_algorithm = alg;
+                    });
+                }
+            },
+        );
+
+        let oauth_grant_sub = cx.subscribe_in(
+            &oauth_grant_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let grant = val.to_string();
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.oauth_grant_type = grant;
+                    });
+                }
+            },
+        );
+
+        let oauth_token_target_sub = cx.subscribe_in(
+            &oauth_token_target_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let target = val.to_string();
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.oauth_token_target = target;
+                    });
+                }
+            },
+        );
+
+        let oauth_response_type_sub = cx.subscribe_in(
+            &oauth_response_type_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let resp = val.to_string();
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.oauth_response_type = resp;
+                    });
+                }
+            },
+        );
+
+        let oauth_send_credentials_sub = cx.subscribe_in(
+            &oauth_send_credentials_select,
+            window,
+            |this, _, ev: &SelectEvent<Vec<&'static str>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(val)) = ev {
+                    let send = val.to_string();
+                    Self::update_auth_config(&this.app_state, cx, |auth| {
+                        auth.oauth_send_credentials = send;
+                    });
+                }
+            },
+        );
+
         let auth_inputs = Self::make_auth_inputs(window, cx);
         let auth_subs = auth_inputs
             .all()
@@ -282,10 +712,16 @@ impl RequestPanel {
                         let form_data = req.body.form_data.clone();
                         let auth = req.auth.clone();
 
+                        let body_lang = if matches!(req.body.body_type, BodyType::Json) {
+                            "json"
+                        } else {
+                            "text"
+                        };
                         url_input.update(cx, |state, cx| {
                             state.set_value(url, window, cx);
                         });
                         body_editor.update(cx, |state, cx| {
+                            state.set_highlighter(body_lang, cx);
                             state.set_value(body, window, cx);
                         });
 
@@ -314,6 +750,7 @@ impl RequestPanel {
                             .collect();
                         this.load_auth_inputs(&auth, window, cx);
                         this.refresh_url_variable_rows(window, cx);
+                        this.sync_selects_from_request(&req, window, cx);
                         if params_changed || url_changed {
                             this.persist_url_and_param_rows(cx);
                         }
@@ -348,12 +785,19 @@ impl RequestPanel {
             app_state,
             active_tab: RequestTab::Body,
             url_input,
+            method_select,
+            body_type_select,
+            auth_type_select,
+            api_key_placement_select,
+            jwt_alg_select,
+            oauth_grant_select,
+            oauth_token_target_select,
+            oauth_response_type_select,
+            oauth_send_credentials_select,
             body_editor,
             body_wrap: false,
             auth_inputs,
             url_variable_rows: vec![],
-            hovered_url_variable: None,
-            hovered_url_path_param: None,
             path_param_keys: vec![],
             param_rows: vec![],
             header_rows: vec![],
@@ -362,7 +806,20 @@ impl RequestPanel {
             row_subs: vec![],
             url_variable_subs: vec![],
             _subs: {
-                let mut subs = vec![request_sub, url_sub, body_sub];
+                let mut subs = vec![
+                    request_sub,
+                    url_sub,
+                    body_sub,
+                    method_sub,
+                    body_type_sub,
+                    auth_type_sub,
+                    api_key_sub,
+                    jwt_alg_sub,
+                    oauth_grant_sub,
+                    oauth_token_target_sub,
+                    oauth_response_type_sub,
+                    oauth_send_credentials_sub,
+                ];
                 subs.extend(auth_subs);
                 subs
             },
@@ -402,6 +859,7 @@ impl RequestPanel {
                 .collect();
             this.load_auth_inputs(&req.auth, window, cx);
             this.refresh_url_variable_rows(window, cx);
+            this.sync_selects_from_request(&req, window, cx);
             if params_changed || url_changed {
                 this.persist_url_and_param_rows(cx);
             }
@@ -756,9 +1214,9 @@ impl RequestPanel {
                 pending_body.push_str(&chunk);
                 pending_chunks += 1;
 
-                if pending_body.len() >= 32 * 1024
-                    || pending_chunks >= 32
-                    || last_flush.elapsed() >= Duration::from_millis(80)
+                if (pending_body.len() >= 64 * 1024
+                    && last_flush.elapsed() >= Duration::from_millis(50))
+                    || last_flush.elapsed() >= Duration::from_millis(100)
                 {
                     let body = std::mem::take(&mut pending_body);
                     let chunks = std::mem::take(&mut pending_chunks);
@@ -807,19 +1265,21 @@ impl RequestPanel {
                             resp.request = Some(request_snapshot.clone());
                             resp.started_at = Some(started_at.clone());
 
-                            let history = state
-                                .workspace
-                                .response_cache
-                                .entry(done_request_id.clone())
-                                .or_default();
-                            history.push(resp.clone());
-                            let overflow = history
-                                .len()
-                                .saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
-                            if overflow > 0 {
-                                history.drain(0..overflow);
+                            if resp.body.len() <= MAX_HISTORY_RESPONSE_BODY_BYTES {
+                                let history = state
+                                    .workspace
+                                    .response_cache
+                                    .entry(done_request_id.clone())
+                                    .or_default();
+                                history.push(resp.clone());
+                                let overflow = history
+                                    .len()
+                                    .saturating_sub(MAX_RESPONSE_HISTORY_PER_REQUEST);
+                                if overflow > 0 {
+                                    history.drain(0..overflow);
+                                }
+                                response_to_store = Some((done_request_id.clone(), resp.clone()));
                             }
-                            response_to_store = Some((done_request_id.clone(), resp.clone()));
 
                             if state.is_active_response_target(&Some(done_request_id.clone())) {
                                 match error {
@@ -939,6 +1399,11 @@ impl Render for RequestPanel {
             .when(has_request, |el| {
                 el.child(
                     TabBar::new("req-tabs")
+                        .underline()
+                        .small()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
                         .selected_index(active_tab.index())
                         .on_click(cx.listener(|this, ix, _, cx| {
                             this.active_tab = RequestTab::from_index(*ix);

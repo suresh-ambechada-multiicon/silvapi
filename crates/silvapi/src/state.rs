@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
+use instant::Instant;
 
-use gpui::{App, EventEmitter};
+use gpui_kit::{App, EventEmitter};
 
 use silvapi_core::models::{
     ApiRequest, Collection, CollectionItem, Folder, HttpResponse, Workspace,
@@ -26,6 +27,7 @@ impl RequestActivity {
 pub enum AppEvent {
     RequestSelected,
     ResponseReceived,
+    StreamChunk(String),
     LoadingChanged,
     WorkspaceChanged,
     SaveNeeded,
@@ -93,7 +95,7 @@ impl AppState {
                 .response_cache
                 .get(id)
                 .and_then(|history| history.last().cloned());
-            self.formatted_response = None;
+            self.formatted_response = self.response.as_ref().and_then(|r| r.formatted_body.clone());
             self.touch_response_cache(id);
             self.sync_active_activity_fields();
             true

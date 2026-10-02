@@ -1,9 +1,10 @@
 #![allow(unused_imports)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use instant::Instant;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
@@ -259,10 +260,14 @@ impl RequestPanel {
             .overflow_y_scroll()
             .p_3()
             .gap_3()
-            .child(Self::auth_type_dropdown(
-                self.app_state.clone(),
-                &auth.auth_type,
-            ))
+            .child(
+                div()
+                    .w(px(160.))
+                    .child(
+                        Select::new(&self.auth_type_select)
+                            .small()
+                    ),
+            )
             .child(
                 h_flex()
                     .items_center()
@@ -322,98 +327,21 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn auth_type_dropdown(
-        app_state: Entity<AppState>,
-        current: &AuthType,
-    ) -> impl IntoElement {
-        let current = current.clone();
-        let current_label = Self::auth_type_label(&current);
-        let current_for_items = current.clone();
-        let item = move |target: AuthType, label: &'static str| {
-            let app_state = app_state.clone();
-            let selected = current_for_items == target;
-            PopupMenuItem::new(label)
-                .checked(selected)
-                .on_click(move |_, _, cx| {
-                    app_state.update(cx, |state, cx| {
-                        if let Some(req) = &mut state.active_request {
-                            req.auth.auth_type = target.clone();
-                            Self::ensure_auth_defaults(&mut req.auth);
-                        }
-                        state.save_active_request();
-                        cx.emit(AppEvent::WorkspaceChanged);
-                        cx.emit(AppEvent::SaveNeeded);
-                    });
-                })
-        };
-
-        DropdownButton::new("auth-type-dropdown")
-            .button(
-                Button::new("auth-type-btn")
-                    .label(current_label)
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                menu.item(item(AuthType::ApiKey, "API Key"))
-                    .item(item(AuthType::AwsV4, "AWS Signature"))
-                    .item(item(AuthType::Basic, "Basic Auth"))
-                    .item(item(AuthType::Bearer, "Bearer Token"))
-                    .item(item(AuthType::Jwt, "JWT Bearer"))
-                    .item(item(AuthType::OAuth2, "OAuth 2.0"))
-                    .separator()
-                    .item(item(AuthType::None, "Inherit from Parent"))
-                    .item(item(AuthType::None, "No Auth"))
-            })
-    }
-
     pub(super) fn render_api_key_auth(
         &self,
         auth: &AuthConfig,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let api_key_in_header = auth.api_key_in_header;
-        let behavior_label = if auth.api_key_in_header {
-            "Insert Header"
-        } else {
-            "Insert Query Param"
-        };
         v_flex()
             .gap_3()
             .child(Self::auth_select_field(
                 "Behavior",
-                DropdownButton::new("api-key-behavior")
-                    .button(
-                        Button::new("api-key-behavior-btn")
-                            .label(behavior_label)
-                            .ghost()
-                            .small(),
-                    )
-                    .dropdown_menu({
-                        let app_state = self.app_state.clone();
-                        move |menu, _, _| {
-                            let header_state = app_state.clone();
-                            let query_state = app_state.clone();
-                            menu.item(
-                                PopupMenuItem::new("Insert Header")
-                                    .checked(api_key_in_header)
-                                    .on_click(move |_, _, cx| {
-                                        Self::update_auth_config(&header_state, cx, |auth| {
-                                            auth.api_key_in_header = true;
-                                        });
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Insert Query Param")
-                                    .checked(!api_key_in_header)
-                                    .on_click(move |_, _, cx| {
-                                        Self::update_auth_config(&query_state, cx, |auth| {
-                                            auth.api_key_in_header = false;
-                                        });
-                                    }),
-                            )
-                        }
-                    }),
+                div()
+                    .w(px(160.))
+                    .child(
+                        Select::new(&self.api_key_placement_select)
+                            .small()
+                    ),
                 cx,
             ))
             .child(self.auth_input_field(
@@ -463,39 +391,16 @@ impl RequestPanel {
     ) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(
-                DropdownButton::new("jwt-algorithm")
-                    .button(
-                        Button::new("jwt-algorithm-btn")
-                            .label(if auth.jwt_algorithm.is_empty() {
-                                "HS256"
-                            } else {
-                                auth.jwt_algorithm.as_str()
-                            })
-                            .ghost()
-                            .small(),
-                    )
-                    .dropdown_menu({
-                        let app_state = self.app_state.clone();
-                        let current = auth.jwt_algorithm.clone();
-                        move |menu, _, _| {
-                            ["HS256", "HS384", "HS512", "RS256", "RS384", "RS512"]
-                                .into_iter()
-                                .fold(menu, |menu, algorithm| {
-                                    let app_state = app_state.clone();
-                                    menu.item(
-                                        PopupMenuItem::new(algorithm)
-                                            .checked(current == algorithm)
-                                            .on_click(move |_, _, cx| {
-                                                Self::update_auth_config(&app_state, cx, |auth| {
-                                                    auth.jwt_algorithm = algorithm.to_string();
-                                                });
-                                            }),
-                                    )
-                                })
-                        }
-                    }),
-            )
+            .child(Self::auth_select_field(
+                "Algorithm",
+                div()
+                    .w(px(120.))
+                    .child(
+                        Select::new(&self.jwt_alg_select)
+                            .small()
+                    ),
+                cx,
+            ))
             .child(self.auth_input_field("Secret or Private Key", &self.auth_inputs.jwt_secret, cx))
             .child(
                 h_flex()
@@ -532,9 +437,15 @@ impl RequestPanel {
 
         v_flex()
             .gap_3()
-            .child(Self::oauth_grant_dropdown(
-                self.app_state.clone(),
-                &auth.oauth_grant_type,
+            .child(Self::auth_select_field(
+                "Grant Type",
+                div()
+                    .w(px(220.))
+                    .child(
+                        Select::new(&self.oauth_grant_select)
+                            .small()
+                    ),
+                cx,
             ))
             .when(is_authorization_code, |el| {
                 el.child(self.auth_input_field("Client ID", &self.auth_inputs.oauth_client_id, cx))
@@ -562,7 +473,12 @@ impl RequestPanel {
                     .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
                     .child(Self::auth_select_field(
                         "Token for authorization",
-                        Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
+                        div()
+                            .w(px(140.))
+                            .child(
+                                Select::new(&self.oauth_token_target_select)
+                                    .small()
+                            ),
                         cx,
                     ))
                     .child(Self::oauth_pkce_checkbox(auth, cx))
@@ -583,12 +499,22 @@ impl RequestPanel {
                     .child(self.auth_input_field("Audience", &self.auth_inputs.oauth_audience, cx))
                     .child(Self::auth_select_field(
                         "Token for authorization",
-                        Self::oauth_token_target_dropdown(self.app_state.clone(), auth),
+                        div()
+                            .w(px(140.))
+                            .child(
+                                Select::new(&self.oauth_token_target_select)
+                                    .small()
+                            ),
                         cx,
                     ))
                     .child(Self::auth_select_field(
                         "Response Type",
-                        Self::oauth_response_type_dropdown(self.app_state.clone(), auth),
+                        div()
+                            .w(px(220.))
+                            .child(
+                                Select::new(&self.oauth_response_type_select)
+                                    .small()
+                            ),
                         cx,
                     ))
             })
@@ -636,131 +562,6 @@ impl RequestPanel {
         }
     }
 
-    pub(super) fn oauth_grant_dropdown(
-        app_state: Entity<AppState>,
-        current: &str,
-    ) -> impl IntoElement {
-        let current = Self::oauth_grant_label(current);
-        let app_state_for_items = app_state.clone();
-        let item = move |grant: &'static str| {
-            let app_state = app_state_for_items.clone();
-            PopupMenuItem::new(grant)
-                .checked(current == grant)
-                .on_click(move |_, _, cx| {
-                    Self::update_auth_config(&app_state, cx, |auth| {
-                        auth.oauth_grant_type = grant.to_string();
-                    });
-                })
-        };
-
-        DropdownButton::new("oauth-grant")
-            .button(
-                Button::new("oauth-grant-btn")
-                    .label(current)
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                menu.item(item("Authorization Code"))
-                    .item(item("Implicit"))
-                    .item(item("Resource Owner Password Credential"))
-                    .item(item("Client Credentials"))
-            })
-    }
-
-    pub(super) fn oauth_token_target_dropdown(
-        app_state: Entity<AppState>,
-        auth: &AuthConfig,
-    ) -> impl IntoElement {
-        let current = default_if_empty(&auth.oauth_token_target, "access_token");
-        DropdownButton::new("oauth-token-target")
-            .button(
-                Button::new("oauth-token-target-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["access_token", "id_token"]
-                    .into_iter()
-                    .fold(menu, |menu, token| {
-                        let app_state = app_state.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(token)
-                                .checked(current == token)
-                                .on_click(move |_, _, cx| {
-                                    Self::update_auth_config(&app_state, cx, |auth| {
-                                        auth.oauth_token_target = token.to_string();
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
-    pub(super) fn oauth_response_type_dropdown(
-        app_state: Entity<AppState>,
-        auth: &AuthConfig,
-    ) -> impl IntoElement {
-        let current = default_if_empty(&auth.oauth_response_type, "Access Token");
-        DropdownButton::new("oauth-response-type")
-            .button(
-                Button::new("oauth-response-type-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["Access Token", "ID Token", "Access Token + ID Token"]
-                    .into_iter()
-                    .fold(menu, |menu, response_type| {
-                        let app_state = app_state.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(response_type)
-                                .checked(current == response_type)
-                                .on_click(move |_, _, cx| {
-                                    Self::update_auth_config(&app_state, cx, |auth| {
-                                        auth.oauth_response_type = response_type.to_string();
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
-    pub(super) fn oauth_send_credentials_dropdown(
-        app_state: Entity<AppState>,
-        auth: &AuthConfig,
-    ) -> impl IntoElement {
-        let current = default_if_empty(&auth.oauth_send_credentials, "In Request Body");
-        DropdownButton::new("oauth-send-credentials")
-            .button(
-                Button::new("oauth-send-credentials-btn")
-                    .label(current.clone())
-                    .ghost()
-                    .small(),
-            )
-            .dropdown_menu(move |menu, _, _| {
-                ["In Request Body", "As Basic Authentication"]
-                    .into_iter()
-                    .fold(menu, |menu, target| {
-                        let app_state = app_state.clone();
-                        let current = current.clone();
-                        menu.item(
-                            PopupMenuItem::new(target)
-                                .checked(current == target)
-                                .on_click(move |_, _, cx| {
-                                    Self::update_auth_config(&app_state, cx, |auth| {
-                                        auth.oauth_send_credentials = target.to_string();
-                                    });
-                                }),
-                        )
-                    })
-            })
-    }
-
     pub(super) fn oauth_pkce_checkbox(
         auth: &AuthConfig,
         cx: &mut Context<Self>,
@@ -782,7 +583,7 @@ impl RequestPanel {
 
     pub(super) fn render_oauth_advanced(
         &self,
-        auth: &AuthConfig,
+        _auth: &AuthConfig,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
@@ -801,7 +602,12 @@ impl RequestPanel {
             ))
             .child(Self::auth_select_field(
                 "Send Credentials",
-                Self::oauth_send_credentials_dropdown(self.app_state.clone(), auth),
+                div()
+                    .w(px(200.))
+                    .child(
+                        Select::new(&self.oauth_send_credentials_select)
+                            .small()
+                    ),
                 cx,
             ))
     }

@@ -1,9 +1,10 @@
 #![allow(unused_imports)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use instant::Instant;
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,

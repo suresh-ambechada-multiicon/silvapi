@@ -574,6 +574,9 @@ pub struct HttpResponse {
     /// debuggable; `status` is 0 for them.
     #[serde(default)]
     pub error: Option<String>,
+    /// Cached pretty-formatted response body to prevent re-formatting on tab switches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatted_body: Option<String>,
 }
 
 /// Everything about an outgoing request, captured at send time so a history
@@ -807,6 +810,7 @@ impl HttpResponse {
             request,
             started_at,
             error: Some(error),
+            formatted_body: None,
         }
     }
 

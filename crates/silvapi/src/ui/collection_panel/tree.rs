@@ -1,9 +1,9 @@
 #![allow(unused_imports)]
 use std::{collections::HashSet, ops::Range};
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     checkbox::Checkbox,
@@ -170,7 +170,7 @@ impl CollectionPanel {
                 .iter()
                 .position(|item| item.id == req_id)
             {
-                scroll.scroll_to_item(pos, gpui::ScrollStrategy::Nearest);
+                scroll.scroll_to_item(pos, gpui_kit::ScrollStrategy::Nearest);
             }
         });
     }

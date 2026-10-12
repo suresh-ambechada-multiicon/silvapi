@@ -24,12 +24,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # System deps mirror Dockerfile.compat (fontconfig/freetype, X11/XCB,
-      # wayland, alsa/udev) needed by gpui_platform on Linux.
+      # wayland, alsa/udev) needed by gpui_platform on Linux, plus clang and mold
+      # for fast linking configured in .cargo/config.toml.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake clang pkg-config \
+            build-essential cmake clang mold pkg-config \
             libfontconfig1-dev libfreetype6-dev \
             libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \

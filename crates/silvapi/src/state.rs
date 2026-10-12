@@ -186,6 +186,12 @@ impl AppState {
         Some(id)
     }
 
+    pub fn add_api_request(&mut self, req: ApiRequest, target_id: Option<&str>) -> String {
+        let id = req.id.clone();
+        self.add_item_to_target(target_id, CollectionItem::Request(req));
+        id
+    }
+
     pub fn add_folder_to_target(&mut self, target_id: Option<&str>) -> Option<String> {
         let folder = Folder::new("New Folder");
         let id = folder.id.clone();

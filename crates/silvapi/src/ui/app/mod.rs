@@ -41,7 +41,7 @@ pub struct AppView {
     theme_search: Entity<InputState>,
     pub(super) theme_select: Entity<SelectState<SearchableVec<SharedString>>>,
     api_picker_open: bool,
-    _api_focus: FocusHandle,
+    api_focus: FocusHandle,
     api_search: Entity<InputState>,
     api_list: Vec<ApiPickerEntry>,
     api_list_query: String,
@@ -430,7 +430,7 @@ impl AppView {
             theme_search,
             theme_select,
             api_picker_open: false,
-            _api_focus: cx.focus_handle(),
+            api_focus: cx.focus_handle(),
             api_search,
             api_list: Vec::new(),
             api_list_query: String::new(),
@@ -570,6 +570,7 @@ impl Render for AppView {
                 if this.recording_shortcut.is_none() { this.toggle_maximize(w, cx); }
             }))
             .child(self.render_main_layout(window, cx))
+            .when(self.api_picker_open,   |el| el.child(self.render_api_picker_overlay(window, cx)))
             .when(self.theme_picker_open, |el| el.child(self.render_theme_picker_overlay(window, cx)))
             .when(self.tab_picker_open,   |el| el.child(self.render_tab_picker_overlay(window, cx)))
             .when(self.font_picker_open,  |el| el.child(self.render_font_picker_overlay(window, cx)))

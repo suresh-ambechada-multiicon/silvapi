@@ -49,154 +49,12 @@ const FONT_PICKER_WIDTH: Pixels = px(420.);
 const FONT_PICKER_MAX_HEIGHT: Pixels = px(560.);
 const FONT_ROW_HEIGHT: Pixels = px(36.);
 
-pub struct ApiPickerDelegate {
-    app_view: Entity<AppView>,
-    all_items: Vec<ApiPickerEntry>,
-    filtered_items: Vec<ApiPickerEntry>,
-    selected_index: Option<IndexPath>,
-}
 
-impl ListDelegate for ApiPickerDelegate {
-    type Item = ListItem;
-
-    fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.filtered_items.len()
-    }
-
-    fn perform_search(
-        &mut self,
-        query: &str,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Task<()> {
-        let query = query.to_lowercase();
-        if query.is_empty() {
-            self.filtered_items = self.all_items.clone();
-        } else {
-            self.filtered_items = self
-                .all_items
-                .iter()
-                .filter(|entry| search_matches(&entry.search_text, &query))
-                .cloned()
-                .collect();
-        }
-        self.selected_index = if self.filtered_items.is_empty() {
-            None
-        } else {
-            Some(IndexPath::new(0))
-        };
-        cx.notify();
-        Task::ready(())
-    }
-
-    fn set_selected_index(
-        &mut self,
-        ix: Option<IndexPath>,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
-        self.selected_index = ix;
-        cx.notify();
-    }
-
-    fn confirm(
-        &mut self,
-        _secondary: bool,
-        window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
-        if let Some(ix) = self.selected_index {
-            if let Some(entry) = self.filtered_items.get(ix.row).cloned() {
-                let app_view = self.app_view.clone();
-                app_view.update(cx, |view, cx| {
-                    view.api_picker_open = false;
-                    view.select_tab(entry.id, window, cx);
-                    let fh = view.focus_handle.clone();
-                    cx.defer_in(window, move |_, window, cx| {
-                        fh.focus(window, cx);
-                    });
-                });
-                window.close_dialog(cx);
-            }
-        }
-    }
-
-    fn render_item(
-        &mut self,
-        ix: IndexPath,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        let entry = self.filtered_items.get(ix.row)?;
-        let is_selected = self.selected_index == Some(ix);
-
-        let item = ListItem::new(ix)
-            .selected(is_selected)
-            .h(API_PICKER_ROW_HEIGHT)
-            .px_3()
-            .py_1()
-            .child(
-                h_flex()
-                    .size_full()
-                    .items_center()
-                    .gap_2()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .min_w(METHOD_BADGE_MIN_WIDTH)
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(method_color(&entry.method, cx))
-                            .child(entry.method.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(CONTEXT_PATH_MAX_WIDTH)
-                            .min_w(px(80.))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(entry.context.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground.opacity(0.7))
-                            .child("/"),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .text_sm()
-                            .text_color(if is_selected {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().foreground
-                            })
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(entry.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(URL_PREVIEW_MAX_WIDTH)
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(entry.url.clone()),
-                    ),
-            );
-
-        Some(item)
-    }
-}
 
 impl AppView {
     pub(super) fn update_api_list(&mut self, cx: &mut Context<Self>) {
-        self.api_list_dirty = true;
+        let query = self.api_search.read(cx).value().to_lowercase();
+        self.rebuild_api_list_for_query(query, cx);
         cx.notify();
     }
 
@@ -205,11 +63,6 @@ impl AppView {
         self.rebuild_api_list_for_query(query, cx);
     }
 
-    pub(super) fn ensure_api_list_for_query(&mut self, query: &str, cx: &App) {
-        if self.api_list_dirty || self.api_list_query != query {
-            self.rebuild_api_list_for_query(query.to_string(), cx);
-        }
-    }
 
     pub(super) fn rebuild_api_list_for_query(&mut self, query: String, cx: &App) {
         let mut out = Vec::new();
@@ -237,9 +90,7 @@ impl AppView {
         self.api_list_query = query;
         self.api_list_dirty = false;
         self.api_cursor = 0;
-        if !self.api_list.is_empty() {
-            self.api_scroll.scroll_to_item(0, ScrollStrategy::Nearest);
-        }
+        self.api_scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     pub(super) fn collect_reqs(
@@ -272,7 +123,6 @@ impl AppView {
 
     pub(super) fn close_api_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.api_picker_open = false;
-        window.close_dialog(cx);
         let fh = self.focus_handle.clone();
         cx.defer_in(window, move |_, window, cx| {
             fh.focus(window, cx);
@@ -287,6 +137,10 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.api_picker_open = false;
+        let fh = self.focus_handle.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            fh.focus(window, cx);
+        });
         self.select_tab(req_id, window, cx);
     }
 
@@ -321,78 +175,205 @@ impl AppView {
     }
 
     pub(super) fn open_api_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.api_search
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.rebuild_api_list_for_query(String::new(), cx);
+        if let Some(active_id) = &self.app_state.read(cx).active_request_id {
+            if let Some(idx) = self
+                .api_list
+                .iter()
+                .position(|entry| &entry.id == active_id)
+            {
+                self.api_cursor = idx;
+                self.api_scroll.scroll_to_item(idx, ScrollStrategy::Nearest);
+            }
+        }
         self.api_picker_open = true;
-        let app_view = cx.entity().clone();
+        cx.notify();
 
-        let viewport = window.viewport_size();
-        let picker_w = (viewport.width * 0.5).max(px(480.)).min(px(960.));
-        let picker_max_h = (viewport.height * 0.7).max(px(320.)).min(px(720.));
-
-        let mut all_items = Vec::new();
-        let state = self.app_state.read(cx);
-        for col in &state.workspace.collections {
-            Self::collect_reqs(&col.items, &col.name, &mut all_items);
-        }
-        if let (Some(active_id), Some(active_req)) =
-            (&state.active_request_id, &state.active_request)
-        {
-            if let Some(entry) = all_items.iter_mut().find(|entry| &entry.id == active_id) {
-                entry.name = active_req.name.clone();
-                entry.method = active_req.method.as_str().to_string();
-                entry.url = active_req.url.clone();
-                entry.full_path = format!("{} / {}", entry.context, entry.name);
-                entry.search_text = api_entry_search_text(entry);
-            }
-        }
-        let filtered_items = all_items.clone();
-        let selected_index = if filtered_items.is_empty() {
-            None
-        } else {
-            Some(IndexPath::new(0))
-        };
-
-        let delegate = ApiPickerDelegate {
-            app_view: app_view.clone(),
-            all_items,
-            filtered_items,
-            selected_index,
-        };
-
-        let list_state = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
-
-        let list_focus = list_state.read(cx).focus_handle(cx);
+        let fh = self.api_search.read(cx).focus_handle(cx);
         cx.defer_in(window, move |_, window, cx| {
-            list_focus.focus(window, cx);
+            fh.focus(window, cx);
         });
+    }
 
-        cx.subscribe_in(&list_state, window, move |_this, _state, ev: &ListEvent, window, cx| {
-            if matches!(ev, ListEvent::Cancel) {
-                window.close_dialog(cx);
-            }
-        }).detach();
+    pub(super) fn render_api_picker_overlay(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let visible_rows = self.api_list.len().min(12) as f32;
+        let list_height = (API_PICKER_ROW_HEIGHT * visible_rows).max(px(56.));
+        let panel_height = px(50.) + list_height;
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let view = app_view.clone();
-            let state = list_state.clone();
-            dialog
-                .w(picker_w)
-                .max_h(picker_max_h)
-                .close_button(false)
-                .overlay(true)
-                .overlay_closable(true)
-                .keyboard(true)
-                .on_close(move |_, _window, cx| {
-                    view.update(cx, |this, _cx| {
-                        this.api_picker_open = false;
-                    });
-                })
-                .child(
-                    div()
-                        .w_full()
-                        .h(picker_max_h)
-                        .child(List::new(&state)),
-                )
-        });
+        div()
+            .absolute().top_0().left_0().size_full()
+            .flex().items_center().justify_center()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                this.close_api_picker(window, cx);
+            }))
+            .child(
+                div()
+                    .id("api-picker-panel")
+                    .w(px(720.)).h(panel_height).max_h(px(560.))
+                    .flex().flex_col()
+                    .bg(cx.theme().background)
+                    .border_1().border_color(cx.theme().border)
+                    .rounded_lg().shadow_lg().overflow_hidden().occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                    .track_focus(&self.api_focus)
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        let n = this.api_list.len();
+                        match event.keystroke.key.as_str() {
+                            "up" if n > 0 => {
+                                this.api_cursor = if this.api_cursor > 0 { this.api_cursor - 1 } else { n - 1 };
+                                this.api_scroll.scroll_to_item(this.api_cursor, ScrollStrategy::Nearest);
+                                cx.notify();
+                            }
+                            "down" if n > 0 => {
+                                this.api_cursor = (this.api_cursor + 1) % n;
+                                this.api_scroll.scroll_to_item(this.api_cursor, ScrollStrategy::Nearest);
+                                cx.notify();
+                            }
+                            "enter" if n > 0 => {
+                                if let Some(entry) = this.api_list.get(this.api_cursor).cloned() {
+                                    this.select_api_from_picker(entry.id, window, cx);
+                                }
+                            }
+                            "escape" => { this.close_api_picker(window, cx); }
+                            _ => {}
+                        }
+                    }))
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(Input::new(&self.api_search).id("api-picker-search-input")),
+                    )
+                    .child(
+                        div().id("api-list").flex_1().min_h_0()
+                            .when(self.api_list.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("No requests found"),
+                                )
+                            })
+                            .when(!self.api_list.is_empty(), |el| {
+                                el.child(
+                                    uniform_list("api-picker-list", self.api_list.len(),
+                                        cx.processor(|this: &mut AppView, range: std::ops::Range<usize>, _window, cx| {
+                                            this.render_api_picker_rows(range, cx)
+                                        }),
+                                    ).track_scroll(&self.api_scroll).size_full(),
+                                )
+                            }),
+                    ),
+            )
+    }
+
+    pub(super) fn render_api_picker_rows(
+        &mut self,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for idx in range {
+            let Some(entry) = self.api_list.get(idx).cloned() else {
+                continue;
+            };
+            let is_selected = idx == self.api_cursor;
+            let bg = if is_selected {
+                cx.theme().primary.opacity(0.1)
+            } else {
+                gpui_kit::transparent_black()
+            };
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("api-picker-row-{}", idx)))
+                    .w_full()
+                    .h(API_PICKER_ROW_HEIGHT)
+                    .px_3()
+                    .bg(bg)
+                    .cursor_pointer()
+                    .tooltip({
+                        let tooltip = entry.full_path.clone();
+                        move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.api_cursor = idx;
+                            this.select_api_from_picker(entry.id.clone(), window, cx);
+                        }),
+                    )
+                    .child(
+                        h_flex()
+                            .size_full()
+                            .items_center()
+                            .gap_2()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .min_w(METHOD_BADGE_MIN_WIDTH)
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(method_color(&entry.method, cx))
+                                    .child(entry.method.clone()),
+                            )
+                            .child(
+                                div()
+                                    .max_w(CONTEXT_PATH_MAX_WIDTH)
+                                    .min_w(px(80.))
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.context.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.7))
+                                    .child("/"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_sm()
+                                    .text_color(if is_selected {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .max_w(URL_PREVIEW_MAX_WIDTH)
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.url.clone()),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 
     pub(super) fn ensure_tab_for_request(&mut self, req_id: String) {
@@ -473,10 +454,14 @@ impl AppView {
     }
 
     pub(super) fn rebuild_tab_list_for_query(&mut self, query: String, cx: &App) {
-        self.ensure_api_list_for_query("", cx);
+        let mut all_entries = Vec::new();
+        let state = self.app_state.read(cx);
+        for col in &state.workspace.collections {
+            Self::collect_reqs(&col.items, &col.name, &mut all_entries);
+        }
         let mut entries = Vec::new();
         for id in &self.open_tabs {
-            if let Some(entry) = self.api_list.iter().find(|entry| &entry.id == id).cloned() {
+            if let Some(entry) = all_entries.iter().find(|entry| &entry.id == id).cloned() {
                 entries.push(entry);
             }
         }
@@ -531,7 +516,6 @@ impl AppView {
             return div().into_any_element();
         }
 
-        self.ensure_api_list_for_query("", cx);
         let active_id = self.app_state.read(cx).active_request_id.clone();
         let tabs = self.open_tabs.clone();
         let view = cx.entity().clone();
@@ -541,13 +525,12 @@ impl AppView {
             .position(|id| active_id.as_deref() == Some(id.as_str()))
             .unwrap_or(0);
 
+        let state = self.app_state.read(cx);
         let tab_items: Vec<Tab> = tabs
             .iter()
             .enumerate()
             .map(|(idx, id)| {
-                let (name, method) = if let Some(entry) = self.api_list.iter().find(|entry| &entry.id == id) {
-                    (entry.name.clone(), entry.method.clone())
-                } else if let Some(req) = self.app_state.read(cx).find_request(id) {
+                let (name, method) = if let Some(req) = state.find_request(id) {
                     (req.name.clone(), req.method.as_str().to_string())
                 } else {
                     ("Request".to_string(), "GET".to_string())

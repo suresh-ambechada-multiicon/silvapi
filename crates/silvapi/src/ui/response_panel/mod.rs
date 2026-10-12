@@ -14,6 +14,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use gpui_kit::base::SelectableText;
 
 use crate::state::{AppEvent, AppState};
 use json_table::JsonTableDelegate;
@@ -476,10 +477,31 @@ impl Render for ResponsePanel {
             .position(|&t| t == active_tab)
             .unwrap_or(0);
 
+        let visible_tabs_for_key = visible_tabs.clone();
         v_flex()
             .size_full()
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.modifiers.alt && !visible_tabs_for_key.is_empty() {
+                    let cur_idx = visible_tabs_for_key
+                        .iter()
+                        .position(|&t| t == this.active_tab)
+                        .unwrap_or(0);
+                    let count = visible_tabs_for_key.len();
+                    match event.keystroke.key.as_str() {
+                        "right" => {
+                            this.active_tab = visible_tabs_for_key[(cur_idx + 1) % count];
+                            cx.notify();
+                        }
+                        "left" => {
+                            this.active_tab = visible_tabs_for_key[if cur_idx == 0 { count - 1 } else { cur_idx - 1 }];
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }
+            }))
             .border_l_1()
             .border_color(cx.theme().border)
             .child(self.render_status_bar(cx))
@@ -919,7 +941,9 @@ impl ResponsePanel {
                                         .selectable(true)
                                         .into_any_element()
                                 } else {
-                                    div().child(value).into_any_element()
+                                    div()
+                                        .child(SelectableText::new("json-table-detail-text", value))
+                                        .into_any_element()
                                 }),
                         ),
                 )

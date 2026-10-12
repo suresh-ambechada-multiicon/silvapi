@@ -4,7 +4,7 @@ use instant::Instant;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::component::{
-    ActiveTheme, IconName, IndexPath, Sizable as _,
+    ActiveTheme, IconName, IndexPath, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -87,6 +87,14 @@ impl RequestTab {
             3 => RequestTab::Auth,
             _ => RequestTab::Info,
         }
+    }
+
+    pub fn next(&self) -> Self {
+        Self::from_index((self.index() + 1) % 5)
+    }
+
+    pub fn prev(&self) -> Self {
+        Self::from_index(if self.index() == 0 { 4 } else { self.index() - 1 })
     }
 }
 
@@ -756,6 +764,26 @@ impl RequestPanel {
                         }
 
                         cx.notify();
+                    } else {
+                        url_input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                        body_editor.update(cx, |state, cx| {
+                            state.set_highlighter("json", cx);
+                            state.set_value("", window, cx);
+                        });
+                        this.row_subs.clear();
+                        this.param_rows.clear();
+                        this.path_param_keys.clear();
+                        this.header_rows.clear();
+                        this.urlencoded_rows.clear();
+                        this.multipart_rows.clear();
+                        this.url_variable_subs.clear();
+                        this.url_variable_rows.clear();
+                        let default_req = silvapi_core::models::ApiRequest::default();
+                        this.load_auth_inputs(&default_req.auth, window, cx);
+                        this.sync_selects_from_request(&default_req, window, cx);
+                        cx.notify();
                     }
                 }
             }
@@ -985,11 +1013,19 @@ impl RequestPanel {
                     }
                     if let Some(old) = &state.active_request {
                         ar.id = old.id.clone();
+                        state.active_request = Some(ar);
+                        state.save_active_request();
+                        cx.emit(AppEvent::SaveNeeded);
+                    } else {
+                        let id = ar.id.clone();
+                        state.add_api_request(ar.clone(), None);
+                        state.select_request(&id);
+                        cx.emit(AppEvent::WorkspaceChanged);
+                        cx.emit(AppEvent::SaveNeeded);
+                        cx.emit(AppEvent::RequestSelected);
                     }
-                    state.active_request = Some(ar);
-                    state.save_active_request();
-                    cx.emit(AppEvent::SaveNeeded);
                 });
+                self.sync_selects_from_request(&parsed, window, cx);
                 self.refresh_url_variable_rows(window, cx);
                 cx.notify();
                 return;
@@ -1089,21 +1125,23 @@ impl RequestPanel {
             silvapi_core::models::RequestSnapshot::from_request(&send_req, resolved_url.clone());
         let started_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let run_started = Instant::now();
-        let response_request_id = self
-            .app_state
-            .read(cx)
-            .active_request_id
-            .clone()
-            .unwrap_or_else(|| req.id.clone());
-
-        let run_id = self.app_state.update(cx, |state, cx| {
-            state.active_request = Some(req.clone());
-            state.save_active_request();
-            let run_id = state.request_started(&response_request_id);
+        let (run_id, response_request_id) = self.app_state.update(cx, |state, cx| {
+            let target_req_id = if state.active_request_id.is_none() || state.find_request(&req.id).is_none() {
+                let id = state.add_api_request(req.clone(), None);
+                state.select_request(&id);
+                cx.emit(AppEvent::WorkspaceChanged);
+                cx.emit(AppEvent::RequestSelected);
+                id
+            } else {
+                state.active_request = Some(req.clone());
+                state.save_active_request();
+                state.active_request_id.clone().unwrap_or_else(|| req.id.clone())
+            };
+            let run_id = state.request_started(&target_req_id);
             state.response = None;
             cx.emit(AppEvent::SaveNeeded);
             cx.emit(AppEvent::LoadingChanged);
-            run_id
+            (run_id, target_req_id)
         });
 
         let app_state_for_timer = self.app_state.clone();
@@ -1375,6 +1413,21 @@ impl Render for RequestPanel {
 
         v_flex()
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.modifiers.alt {
+                    match event.keystroke.key.as_str() {
+                        "right" => {
+                            this.active_tab = this.active_tab.next();
+                            cx.notify();
+                        }
+                        "left" => {
+                            this.active_tab = this.active_tab.prev();
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }
+            }))
             .size_full()
             .bg(cx.theme().background)
             .border_l_1()
@@ -1383,17 +1436,27 @@ impl Render for RequestPanel {
             .child(self.render_url_bar(window, cx))
             .when(!has_request, |el| {
                 el.child(
-                    div()
+                    v_flex()
                         .flex_1()
-                        .flex()
                         .items_center()
                         .justify_center()
+                        .gap_2()
                         .overflow_hidden()
-                        .text_color(cx.theme().muted_foreground)
-                        .text_sm()
                         .px_4()
-                        .text_center()
-                        .child("Paste cURL or select a request"),
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_base()
+                                .font_medium()
+                                .child("No API Selected"),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground.opacity(0.8))
+                                .text_xs()
+                                .text_center()
+                                .child("Paste a cURL command into the URL bar above, enter a URL and hit Send, or select a request from the sidebar"),
+                        ),
                 )
             })
             .when(has_request, |el| {

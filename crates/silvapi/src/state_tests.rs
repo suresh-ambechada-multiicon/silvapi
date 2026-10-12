@@ -121,3 +121,32 @@ fn loading_state_is_scoped_to_selected_request() {
     assert!(state.select_request(&request_a_id));
     assert!(state.is_loading);
 }
+
+#[test]
+fn add_api_request_creates_default_collection_if_empty() {
+    let mut state = AppState {
+        workspace: Workspace::new("Test"),
+        active_request: None,
+        active_request_id: None,
+        response: None,
+        is_loading: false,
+        request_started_at: None,
+        error: None,
+        request_activity: HashMap::new(),
+        next_request_run_id: 0,
+        formatted_response: None,
+        cache_order: Vec::new(),
+        run_abort: std::collections::HashMap::new(),
+    };
+
+    let req = ApiRequest::with_name("Test Request");
+    let req_id = req.id.clone();
+    let returned_id = state.add_api_request(req, None);
+
+    assert_eq!(req_id, returned_id);
+    assert_eq!(state.workspace.collections.len(), 1);
+    assert_eq!(state.workspace.collections[0].items.len(), 1);
+    assert!(state.select_request(&req_id));
+    assert_eq!(state.active_request_id.as_deref(), Some(req_id.as_str()));
+    assert_eq!(state.active_request.as_ref().unwrap().name, "Test Request");
+}

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
@@ -179,6 +180,10 @@ impl ResponsePanel {
             )
             .when(!collapsed, |el| {
                 el.children(rows.into_iter().enumerate().map(|(idx, (key, value))| {
+                    let key_text = single_line(&key);
+                    let val_text = single_line(&value);
+                    let key_id = SharedString::from(format!("hdr-key-{}-{}", title, idx));
+                    let val_id = SharedString::from(format!("hdr-val-{}-{}", title, idx));
                     h_flex()
                         .w_full()
                         .items_start()
@@ -196,7 +201,7 @@ impl ResponsePanel {
                                 .text_color(cx.theme().muted_foreground)
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(single_line(key)),
+                                .child(SelectableText::new(key_id, key_text)),
                         )
                         .child(
                             div()
@@ -205,7 +210,7 @@ impl ResponsePanel {
                                 .text_sm()
                                 .text_color(cx.theme().foreground)
                                 .whitespace_normal()
-                                .child(single_line(value)),
+                                .child(SelectableText::new(val_id, val_text)),
                         )
                 }))
             })

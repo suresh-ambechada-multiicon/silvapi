@@ -3,9 +3,42 @@ use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, USER_AGENT};
 use serde_json::json;
 
-pub const DEFAULT_URL: &str = "https://claude.ai/api/organizations/d161e2d8-44da-4d0d-a388-f4920847a725/chat_conversations/2139e97c-12a2-4e44-ba2b-c9fe848d0b97/completion";
-
 pub const DEFAULT_COOKIE: &str = "anthropic-device-id=6a335f5c-b5e1-478f-8d41-4a05cd093288; anthropic-consent-preferences=%7B%22analytics%22%3Afalse%2C%22marketing%22%3Afalse%7D; g_state={\"i_l\":0,\"i_ll\":1787906701037,\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1787906701037}; lastActiveOrg=d161e2d8-44da-4d0d-a388-f4920847a725; intercom-device-id-lupk8zyo=c2e75520-d1c2-43c9-baf3-64b069846ec7; sessionKey=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; sessionKeyLC=1791474452632; routingHint=sk-ant-rh-eyJ0eXAiOiAiSldUIiwgImFsZyI6ICJFUzI1NiIsICJraWQiOiAiN0MxcWFPRnhqdWxaUjRFQnNuNk1UeUZGNWdDV2JHbFpNVDR2RklrRFFpbyJ9.eyJzdWIiOiAiN2RiM2ZkMGMtNTU5MS00ODY1LThiMzItMDg1OTg3ZDc1NTdkIiwgInYiOiAyLCAiaXNfdmVyaWZpZWQiOiB0cnVlLCAiaGFzX21lbWJlcnNoaXAiOiB0cnVlLCAib25ib2FyZGluZ19jb21wbGV0ZSI6IHRydWUsICJhZ2VfdmVyaWZpZWQiOiB0cnVlLCAicGVuZGluZ19pbnZpdGUiOiBmYWxzZSwgInBob25lX3ZlcmlmaWVkIjogdHJ1ZSwgIm5hbWUiOiAic3VyZXNoIiwgImZsYWdzIjogWyJlZGdlX2RlZmF1bHRfcm91dGUiXSwgImlhdCI6IDE3OTE0NzQ0NTIsICJpc3MiOiAiY2xhdWRlLWFpLXJvdXRpbmcifQ.vtFpwMnu2HsIM8Q5y00Mg2U4PwjZzSgn7mSZoowkXPl2GZxx1NUWdzfxnYX1KGNxWNFFUM-ccztVGpFHmIxobQ; artifact-app-viewer=1; sessionKeyV3=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; sessionKeyV3LC=1791551365411; CH-prefers-color-scheme=dark; activitySessionId=a0c593cb-7356-4785-9096-cda884d36750; _cfuvid=QXG5adnvFRwiXWKFdr58D5U4YJ3U4nTK0s1jFmrcCgI-1791791907.44955-1.0.1.1-OF4776ZkvSYb68DDXpv47HzIDbbHQrc6lavPktwiyuM; user-sidebar-visible-on-load=true; ion-vk=75c8b176-f024-4397-b898-40c62baa46cd; cf_clearance=3gK4zY5y4EG_7CGF2GGug6Q9mIe4ZjyZ5XliE.8Rl0I-1791797926-1.2.1.1-FNr.nLOj3NwxCXTfAbI2oeE15uOab4zlqVskmsWXfPSLAa4KWdxPFjXFuVxjOs62R4NAOxe2aWleCu6WKZeuei9GQlSsyL3D2vImHGVM3w2RQxONDxujG_EUTefYDi0takeA18pLetffU1v.78rfsxAU9cDQn1DGBKtBhKIwfKhOOWDurqlL2aeEBcPRYfhlEqtX.QguqA2Ti.Feda0Vx.DvbzSM_esSrRRJxspnP3Fnjh2d3n3UhxhWBg9HEsEmZSDonwoqL24W5RfEDk6L.djnkhPT9P5ntXIguCjrTi4StiqeWZa4W_.27IMgGB8o1HcQMRq6QKKFRnlstGgIsdfnZRqgGRdxRhJJGQsc3ERPd2OuJZuKlsBQFzl6qL73Voy3FamjSWssuMomKPikUQtwFJfubUO_JWb35ZtIuzIptii56FYzpvv6KHMgVjfC; __cf_bm=5RxTcIBdTC6U3l.ohOCGdOot.Udj7rLSdvAKWTJQSMA-1791797926.501014-1.0.1.1-lI_ETr3i7HqfMU4gJHpO1Pr_mnBtvbRf9iKW4dy9aZD98gLvcSRRaTR0BjO6U4xEB5eM482xhaEHFCBZRPf7brhpTjB7YL.zfTYjymyAQXJy8IR85SYmUS_HgpiSNhAJ";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeConfig {
+    pub cookie: String,
+    pub org_id: String,
+    pub conv_id: String,
+    pub device_id: String,
+    pub model: String,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            cookie: DEFAULT_COOKIE.to_string(),
+            org_id: "d161e2d8-44da-4d0d-a388-f4920847a725".to_string(),
+            conv_id: "2139e97c-12a2-4e44-ba2b-c9fe848d0b97".to_string(),
+            device_id: "6a335f5c-b5e1-478f-8d41-4a05cd093288".to_string(),
+            model: "claude-haiku-5-5".to_string(),
+        }
+    }
+}
+
+impl ClaudeConfig {
+    pub fn completion_url(&self) -> String {
+        format!(
+            "https://claude.ai/api/organizations/{}/chat_conversations/{}/completion",
+            self.org_id.trim(),
+            self.conv_id.trim()
+        )
+    }
+
+    pub fn referer_url(&self) -> String {
+        format!("https://claude.ai/chat/{}", self.conv_id.trim())
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct UsageLimitInfo {
@@ -30,6 +63,7 @@ pub enum ClaudeStreamEvent {
 pub async fn send_prompt_stream<F>(
     prompt: &str,
     parent_uuid: Option<&str>,
+    config: &ClaudeConfig,
     mut on_event: F,
 ) -> Result<()>
 where
@@ -47,21 +81,19 @@ where
         "anthropic-client-sha",
         HeaderValue::from_static("d40c622ef07c4d318d1504ae40fabc3faa8a85fa"),
     );
-    headers.insert(
-        "anthropic-device-id",
-        HeaderValue::from_static("6a335f5c-b5e1-478f-8d41-4a05cd093288"),
-    );
+    if let Ok(dev_val) = HeaderValue::from_str(config.device_id.trim()) {
+        headers.insert("anthropic-device-id", dev_val);
+    }
     headers.insert(ORIGIN, HeaderValue::from_static("https://claude.ai"));
-    headers.insert(
-        REFERER,
-        HeaderValue::from_static("https://claude.ai/chat/2139e97c-12a2-4e44-ba2b-c9fe848d0b97"),
-    );
+    if let Ok(ref_val) = HeaderValue::from_str(&config.referer_url()) {
+        headers.insert(REFERER, ref_val);
+    }
     headers.insert(
         USER_AGENT,
         HeaderValue::from_static("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"),
     );
 
-    if let Ok(cookie_val) = HeaderValue::from_str(DEFAULT_COOKIE) {
+    if let Ok(cookie_val) = HeaderValue::from_str(config.cookie.trim()) {
         headers.insert(COOKIE, cookie_val);
     }
 
@@ -70,12 +102,18 @@ where
     let assistant_uuid = uuid::Uuid::now_v7().to_string();
     let completion_id = uuid::Uuid::new_v4().to_string();
 
+    let model = if config.model.trim().is_empty() {
+        "claude-haiku-5-5"
+    } else {
+        config.model.trim()
+    };
+
     let body = json!({
         "prompt": prompt,
         "parent_message_uuid": parent_id,
         "timezone": "Asia/Calcutta",
         "locale": "en-US",
-        "model": "claude-haiku-5-5",
+        "model": model,
         "effort": "medium",
         "thinking_mode": "auto",
         "tools": [
@@ -96,7 +134,7 @@ where
     });
 
     let res = client
-        .post(DEFAULT_URL)
+        .post(&config.completion_url())
         .headers(headers)
         .json(&body)
         .send()

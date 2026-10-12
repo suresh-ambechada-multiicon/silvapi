@@ -10,7 +10,7 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 mod anthropic;
-use anthropic::{ClaudeStreamEvent, UsageLimitInfo, send_prompt_stream};
+use anthropic::{ClaudeConfig, ClaudeStreamEvent, UsageLimitInfo, send_prompt_stream};
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extra {
@@ -34,6 +34,14 @@ struct Chat {
     pad: f32,
     focus: FocusHandle,
     scroll: ScrollHandle,
+
+    config: ClaudeConfig,
+    config_open: bool,
+    cookie_input: Entity<InputState>,
+    org_id_input: Entity<InputState>,
+    conv_id_input: Entity<InputState>,
+    device_id_input: Entity<InputState>,
+    model_input: Entity<InputState>,
 }
 
 impl Chat {
@@ -47,7 +55,80 @@ impl Chat {
         .detach();
         input.update(cx, |s, cx| s.focus(window, cx));
         let (msgs, parent) = load_history();
-        Self { input, msgs, loading: false, parent, usage: UsageLimitInfo::default(), pad: load_pad(), focus: cx.focus_handle(), scroll: ScrollHandle::new() }
+        let config = load_config();
+        let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder("Cookie").default_value(&config.cookie));
+        let org_id_input = cx.new(|cx| InputState::new(window, cx).placeholder("Organization ID").default_value(&config.org_id));
+        let conv_id_input = cx.new(|cx| InputState::new(window, cx).placeholder("Conversation ID").default_value(&config.conv_id));
+        let device_id_input = cx.new(|cx| InputState::new(window, cx).placeholder("Device ID").default_value(&config.device_id));
+        let model_input = cx.new(|cx| InputState::new(window, cx).placeholder("Model").default_value(&config.model));
+
+        Self {
+            input,
+            msgs,
+            loading: false,
+            parent,
+            usage: UsageLimitInfo::default(),
+            pad: load_pad(),
+            focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
+            config,
+            config_open: false,
+            cookie_input,
+            org_id_input,
+            conv_id_input,
+            device_id_input,
+            model_input,
+        }
+    }
+
+    fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cfg = self.config.clone();
+        self.cookie_input.update(cx, |s, cx| s.set_value(&cfg.cookie, window, cx));
+        self.org_id_input.update(cx, |s, cx| s.set_value(&cfg.org_id, window, cx));
+        self.conv_id_input.update(cx, |s, cx| s.set_value(&cfg.conv_id, window, cx));
+        self.device_id_input.update(cx, |s, cx| s.set_value(&cfg.device_id, window, cx));
+        self.model_input.update(cx, |s, cx| s.set_value(&cfg.model, window, cx));
+        self.config_open = true;
+        self.cookie_input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.config_open = false;
+        self.input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    fn save_config_from_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cookie = self.cookie_input.read(cx).value().trim().to_string();
+        let org_id = clean_id(&self.org_id_input.read(cx).value());
+        let conv_id = clean_id(&self.conv_id_input.read(cx).value());
+        let device_id = self.device_id_input.read(cx).value().trim().to_string();
+        let model = self.model_input.read(cx).value().trim().to_string();
+
+        let old_conv = self.config.conv_id.clone();
+        self.config = ClaudeConfig {
+            cookie: if cookie.is_empty() { anthropic::DEFAULT_COOKIE.to_string() } else { cookie },
+            org_id: if org_id.is_empty() { "d161e2d8-44da-4d0d-a388-f4920847a725".to_string() } else { org_id },
+            conv_id: if conv_id.is_empty() { "2139e97c-12a2-4e44-ba2b-c9fe848d0b97".to_string() } else { conv_id },
+            device_id: if device_id.is_empty() { "6a335f5c-b5e1-478f-8d41-4a05cd093288".to_string() } else { device_id },
+            model: if model.is_empty() { "claude-haiku-5-5".to_string() } else { model },
+        };
+        if self.config.conv_id != old_conv {
+            self.parent = None;
+        }
+        save_config(&self.config);
+        self.close_config(window, cx);
+    }
+
+    fn reset_config_defaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let def = ClaudeConfig::default();
+        self.cookie_input.update(cx, |s, cx| s.set_value(&def.cookie, window, cx));
+        self.org_id_input.update(cx, |s, cx| s.set_value(&def.org_id, window, cx));
+        self.conv_id_input.update(cx, |s, cx| s.set_value(&def.conv_id, window, cx));
+        self.device_id_input.update(cx, |s, cx| s.set_value(&def.device_id, window, cx));
+        self.model_input.update(cx, |s, cx| s.set_value(&def.model, window, cx));
+        cx.notify();
     }
 
     fn at_bottom(&self) -> bool {
@@ -70,12 +151,13 @@ impl Chat {
         cx.notify();
 
         let parent = self.parent.clone();
+        let config = self.config.clone();
         cx.spawn_in(window, async move |this, window| {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             std::thread::spawn(move || {
                 if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
                     rt.block_on(async move {
-                        let _ = send_prompt_stream(&prompt, parent.as_deref(), move |ev| {
+                        let _ = send_prompt_stream(&prompt, parent.as_deref(), &config, move |ev| {
                             let _ = tx.send(ev);
                         })
                         .await;
@@ -205,15 +287,153 @@ impl Render for Chat {
             list = list.child(col);
         }
 
+        let modal = if self.config_open {
+            Some(
+                div()
+                    .id("modal-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(cx.theme().background.opacity(0.85))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        v_flex()
+                            .id("modal-dialog")
+                            .w(px(560.))
+                            .max_w_full()
+                            .p_4()
+                            .gap_3()
+                            .bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Model Configuration"))
+                                    .child(
+                                        div()
+                                            .id("btn-modal-close")
+                                            .cursor_pointer()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .hover(|s| s.text_color(cx.theme().foreground))
+                                            .child("[x]")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.close_config(window, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Cookie"))
+                                    .child(Input::new(&self.cookie_input)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Organization ID"))
+                                    .child(Input::new(&self.org_id_input)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Conversation ID"))
+                                    .child(Input::new(&self.conv_id_input)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Device ID"))
+                                    .child(Input::new(&self.device_id_input)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Model"))
+                                    .child(Input::new(&self.model_input)),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .pt_2()
+                                    .child(
+                                        div()
+                                            .id("btn-reset-defaults")
+                                            .cursor_pointer()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .hover(|s| s.text_color(cx.theme().danger))
+                                            .child("Reset defaults")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.reset_config_defaults(window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .id("btn-config-cancel")
+                                                    .cursor_pointer()
+                                                    .px_3()
+                                                    .py_1()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .hover(|s| s.text_color(cx.theme().foreground))
+                                                    .child("Cancel")
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.close_config(window, cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("btn-config-save")
+                                                    .cursor_pointer()
+                                                    .px_3()
+                                                    .py_1()
+                                                    .border_1()
+                                                    .border_color(cx.theme().primary)
+                                                    .text_color(cx.theme().primary)
+                                                    .hover(|s| s.bg(cx.theme().primary).text_color(cx.theme().background))
+                                                    .child("Save")
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.save_config_from_inputs(window, cx);
+                                                    })),
+                                            ),
+                                    ),
+                            ),
+                    ),
+            )
+        } else {
+            None
+        };
+
         v_flex()
             .size_full()
+            .relative()
             .p_3()
             .gap_2()
             .id("root")
             .track_focus(&self.focus)
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                if !this.config_open {
+                    window.focus(&this.focus, cx);
+                }
+            }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "/" && !this.input.read(cx).focus_handle(cx).is_focused(window) {
+                if ev.keystroke.key == "escape" && this.config_open {
+                    this.close_config(window, cx);
+                    return;
+                }
+                if ev.keystroke.key == "/" && !this.config_open && !this.input.read(cx).focus_handle(cx).is_focused(window) {
                     this.input.update(cx, |s, cx| s.focus(window, cx));
                 }
             }))
@@ -221,14 +441,29 @@ impl Render for Chat {
             .text_color(cx.theme().foreground)
             .child(
                 h_flex()
-                    .group("pad")
+                    .group("top-bar")
                     .h(px(24.))
-                    .justify_end()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .id("btn-config")
+                            .opacity(0.)
+                            .group_hover("top-bar", |s| s.opacity(1.))
+                            .cursor_pointer()
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|s| s.text_color(cx.theme().foreground))
+                            .child("[config]")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_config(window, cx);
+                            })),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
                             .opacity(0.)
-                            .group_hover("pad", |s| s.opacity(1.))
+                            .group_hover("top-bar", |s| s.opacity(1.))
                             .text_color(cx.theme().muted_foreground)
                             .child(
                                 div().id("pad-less").cursor_pointer().child("<").on_click(cx.listener(|this, _, _, cx| {
@@ -247,7 +482,16 @@ impl Render for Chat {
                             ),
                     ),
             )
-            .child(div().id("chat").flex_1().min_w_0().px(px(pad)).overflow_y_scroll().track_scroll(&self.scroll).vertical_scrollbar(&self.scroll).child(list))
+            .child(
+                div()
+                    .id("chat")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .px(px(pad))
+                    .overflow_y_scrollbar()
+                    .child(list),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -260,6 +504,7 @@ impl Render for Chat {
                     })
                     .child(div().flex_1().child(Input::new(&self.input))),
             )
+            .children(modal)
     }
 }
 
@@ -323,6 +568,38 @@ fn save_pad(pad: f32) {
     if let Some(c) = chat_db() {
         let _ = c.execute("insert or replace into meta(key, value) values('pad', ?1)", [pad.to_string()]);
     }
+}
+
+fn load_config() -> ClaudeConfig {
+    let Some(conn) = chat_db() else { return ClaudeConfig::default() };
+    if let Ok(val) = conn.query_row("select value from meta where key='claude_config'", [], |r| r.get::<_, String>(0)) {
+        if let Ok(cfg) = serde_json::from_str::<ClaudeConfig>(&val) {
+            return cfg;
+        }
+    }
+    ClaudeConfig::default()
+}
+
+fn save_config(cfg: &ClaudeConfig) {
+    let Some(conn) = chat_db() else { return };
+    if let Ok(val) = serde_json::to_string(cfg) {
+        let _ = conn.execute("insert or replace into meta(key, value) values('claude_config', ?1)", [val]);
+    }
+}
+
+fn clean_id(s: &str) -> String {
+    let s = s.trim();
+    if let Some(pos) = s.rfind('/') {
+        let after = &s[pos + 1..];
+        if after == "completion" {
+            let before = &s[..pos];
+            if let Some(p2) = before.rfind('/') {
+                return before[p2 + 1..].to_string();
+            }
+        }
+        return after.to_string();
+    }
+    s.to_string()
 }
 
 fn remaining(ts: i64) -> String {

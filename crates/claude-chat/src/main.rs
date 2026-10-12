@@ -11,6 +11,29 @@ use std::path::PathBuf;
 
 mod anthropic;
 use anthropic::{ClaudeConfig, ClaudeStreamEvent, UsageLimitInfo, send_prompt_stream};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+
+fn mermaid_cache_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-chat")
+        .join("mermaid_cache");
+    let _ = std::fs::create_dir_all(&base);
+    base
+}
+
+fn mermaid_rendered_cache() -> &'static Mutex<HashMap<String, Option<(PathBuf, f32, f32)>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<(PathBuf, f32, f32)>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mermaid_inflight() -> &'static Mutex<HashSet<String>> {
+    static INFLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    INFLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Extra {
@@ -247,7 +270,7 @@ impl Render for Chat {
         let mut list = v_flex().w_full().min_w_0().gap_3();
         for (i, m) in self.msgs.iter().enumerate() {
             if m.user {
-                let view = TextView::markdown(SharedString::from(format!("m{i}")), m.text.clone()).selectable(true);
+                let view = render_markdown(format!("m{i}"), &m.text, window, cx);
                 list = list.child(v_flex().w_full().items_end().child(
                     div().max_w_full().min_w_0().px_3().py_1().border_1().border_color(cx.theme().primary).child(view),
                 ));
@@ -269,7 +292,7 @@ impl Render for Chat {
                 if m.open {
                     let mut inner = v_flex().w_full().min_w_0().gap_1().pl_3().text_color(cx.theme().muted_foreground);
                     if !m.extra.think.is_empty() {
-                        inner = inner.child(TextView::markdown(SharedString::from(format!("t{i}")), m.extra.think.clone()));
+                        inner = inner.child(render_markdown(format!("t{i}"), &m.extra.think, window, cx));
                     }
                     for (j, (name, input, output)) in m.extra.tools.iter().enumerate() {
                         let tip = format!("input: {}\n\noutput: {}", clip(input), clip(output));
@@ -283,7 +306,7 @@ impl Render for Chat {
                     col = col.child(inner);
                 }
             }
-            col = col.child(TextView::markdown(SharedString::from(format!("m{i}")), m.text.clone()).selectable(true));
+            col = col.child(render_markdown(format!("m{i}"), &m.text, window, cx));
             list = list.child(col);
         }
 
@@ -485,11 +508,13 @@ impl Render for Chat {
             .child(
                 div()
                     .id("chat")
+                    .size_full()
                     .flex_1()
                     .min_h_0()
-                    .w_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .vertical_scrollbar(&self.scroll)
                     .px(px(pad))
-                    .overflow_y_scrollbar()
                     .child(list),
             )
             .child(
@@ -506,6 +531,192 @@ impl Render for Chat {
             )
             .children(modal)
     }
+}
+
+fn request_mermaid_render(code: String, window: &mut Window, cx: &mut Context<Chat>) {
+    let mut inflight = mermaid_inflight().lock().unwrap();
+    if !inflight.insert(code.clone()) {
+        return;
+    }
+    drop(inflight);
+
+    cx.spawn_in(window, async move |this, window| {
+        let code_clone = code.clone();
+        let (tx, rx) = futures::channel::oneshot::channel();
+
+        std::thread::spawn(move || {
+            use std::hash::{DefaultHasher, Hasher};
+            let mut hasher = DefaultHasher::new();
+            hasher.write(code_clone.as_bytes());
+            let hash_val = hasher.finish();
+            let file_path = mermaid_cache_dir().join(format!("mermaid_{:016x}.png", hash_val));
+
+            let opt_res = if file_path.exists() {
+                // Read dimensions from existing PNG header (PNG width & height are at bytes 16..24)
+                if let Ok(bytes) = std::fs::read(&file_path) {
+                    if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
+                        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as f32;
+                        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as f32;
+                        Some((file_path.clone(), w, h))
+                    } else {
+                        Some((file_path.clone(), 800.0, 600.0))
+                    }
+                } else {
+                    None
+                }
+            } else {
+                let mut theme = mermaid_rs_renderer::Theme::dark();
+                theme.background = "transparent".to_string();
+                theme.primary_color = "#23242c".to_string();
+                theme.primary_text_color = "#e5e5ea".to_string();
+                theme.primary_border_color = "#606275".to_string();
+                theme.line_color = "#9999aa".to_string();
+                theme.secondary_color = "#2d2f3b".to_string();
+                theme.tertiary_color = "#1a1b22".to_string();
+                theme.cluster_background = "#14151b".to_string();
+                theme.cluster_border = "rgba(255, 255, 255, 0.15)".to_string();
+                theme.edge_label_background = "#202129".to_string();
+                theme.text_color = "#dddddd".to_string();
+
+                let svg_res = mermaid_rs_renderer::render_with_options(
+                    &code_clone,
+                    mermaid_rs_renderer::RenderOptions {
+                        theme: theme.clone(),
+                        layout: mermaid_rs_renderer::LayoutConfig::default(),
+                    },
+                );
+
+                match svg_res {
+                    Ok(svg_str) => {
+                        let render_cfg = mermaid_rs_renderer::RenderConfig::default();
+                        if mermaid_rs_renderer::write_output_png(&svg_str, &file_path, &render_cfg, &theme).is_ok() {
+                            if let Ok(bytes) = std::fs::read(&file_path) {
+                                if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
+                                    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as f32;
+                                    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as f32;
+                                    Some((file_path.clone(), w, h))
+                                } else {
+                                    Some((file_path.clone(), 800.0, 600.0))
+                                }
+                            } else {
+                                Some((file_path.clone(), 800.0, 600.0))
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
+            };
+
+            let _ = tx.send(opt_res);
+        });
+
+        let opt_entry = rx.await.unwrap_or(None);
+
+        mermaid_rendered_cache().lock().unwrap().insert(code.clone(), opt_entry);
+        mermaid_inflight().lock().unwrap().remove(&code);
+
+        // Notify window/UI to re-render once background image is ready
+        let _ = window.update(|_, cx| {
+            let _ = this.update(cx, |_, cx| {
+                cx.notify();
+            });
+        });
+    })
+    .detach();
+}
+
+fn render_markdown(id: impl Into<SharedString>, text: &str, window: &mut Window, cx: &mut Context<Chat>) -> gpui::AnyElement {
+    let id_str = id.into();
+    if !text.contains("```mermaid") {
+        return TextView::markdown(id_str, text.to_string())
+            .selectable(true)
+            .into_any_element();
+    }
+
+    let win_w: f32 = window.viewport_size().width.into();
+    let max_avail_w = (win_w - 64.0).max(100.0);
+
+    let mut col = v_flex().w_full().min_w_0().gap_2();
+    let mut rest = text;
+    let mut part_idx = 0;
+
+    while let Some(start_pos) = rest.find("```mermaid") {
+        let before = &rest[..start_pos];
+        if !before.trim().is_empty() {
+            col = col.child(
+                TextView::markdown(SharedString::from(format!("{id_str}-p{part_idx}")), before.to_string())
+                    .selectable(true),
+            );
+            part_idx += 1;
+        }
+
+        let after_start = &rest[start_pos + "```mermaid".len()..];
+        if let Some(end_pos) = after_start.find("```") {
+            let mermaid_code = after_start[..end_pos].trim().to_string();
+
+            // Check if already rendered in memory cache
+            let cached_entry = mermaid_rendered_cache().lock().unwrap().get(&mermaid_code).cloned();
+
+            match cached_entry {
+                Some(Some((img_path, orig_w, orig_h))) => {
+                    // Compute exact scaled display height so no extra whitespace is reserved
+                    let scale = (max_avail_w / orig_w).min(1.0);
+                    let display_w = orig_w * scale;
+                    let display_h = orig_h * scale;
+
+                    col = col.child(
+                        gpui::img(img_path)
+                            .w(px(display_w))
+                            .h(px(display_h)),
+                    );
+                }
+                Some(None) => {
+                    // Parsed/rendered failed or unsupported syntax - fallback to standard code block
+                    col = col.child(
+                        TextView::markdown(
+                            SharedString::from(format!("{id_str}-p{part_idx}")),
+                            format!("```mermaid\n{mermaid_code}\n```"),
+                        )
+                        .selectable(true),
+                    );
+                }
+                None => {
+                    // Not rendered yet: trigger background worker thread without blocking UI frame
+                    request_mermaid_render(mermaid_code.clone(), window, cx);
+
+                    // While rendering, display the code block cleanly without lag
+                    col = col.child(
+                        v_flex()
+                            .w_full()
+                            .my_1()
+                            .child(
+                                TextView::markdown(
+                                    SharedString::from(format!("{id_str}-p{part_idx}")),
+                                    format!("```mermaid\n{mermaid_code}\n```"),
+                                )
+                                .selectable(true),
+                            ),
+                    );
+                }
+            }
+
+            part_idx += 1;
+            rest = &after_start[end_pos + 3..];
+        } else {
+            break;
+        }
+    }
+
+    if !rest.trim().is_empty() {
+        col = col.child(
+            TextView::markdown(SharedString::from(format!("{id_str}-p{part_idx}")), rest.to_string())
+                .selectable(true),
+        );
+    }
+
+    col.into_any_element()
 }
 
 fn chat_db() -> Option<rusqlite::Connection> {

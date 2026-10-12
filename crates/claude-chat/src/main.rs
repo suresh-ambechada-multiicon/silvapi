@@ -10,7 +10,7 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 mod anthropic;
-use anthropic::{ClaudeConfig, ClaudeStreamEvent, UsageLimitInfo, send_prompt_stream};
+use anthropic::{ClaudeConfig, ClaudeStreamEvent, UsageLimitInfo, create_conversation, send_prompt_stream};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -158,6 +158,49 @@ impl Chat {
         let max: f32 = self.scroll.max_offset().y.into();
         let off: f32 = self.scroll.offset().y.into();
         max + off <= 4.0
+    }
+
+    fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+
+        self.msgs.clear();
+        self.parent = None;
+        save_history(&self.msgs, &self.parent);
+        self.scroll.scroll_to_bottom();
+
+        let cfg = self.config.clone();
+        if !cfg.is_configured() {
+            cx.notify();
+            return;
+        }
+
+        cx.spawn_in(window, async move |this, window| {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    rt.block_on(async move {
+                        let res = create_conversation(&cfg, "").await;
+                        let _ = tx.send(res);
+                    });
+                }
+            });
+
+            if let Ok(Ok(new_id)) = rx.await {
+                let _ = window.update(|window, cx| {
+                    let _ = this.update(cx, |c, cx| {
+                        c.config.conv_id = new_id.clone();
+                        c.conv_id_input.update(cx, |s, cx| s.set_value(&new_id, window, cx));
+                        save_config(&c.config);
+                        cx.notify();
+                    });
+                });
+            }
+        })
+        .detach();
+
+        cx.notify();
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -470,17 +513,35 @@ impl Render for Chat {
                     .justify_between()
                     .items_center()
                     .child(
-                        div()
-                            .id("btn-config")
-                            .opacity(0.)
-                            .group_hover("top-bar", |s| s.opacity(1.))
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|s| s.text_color(cx.theme().foreground))
-                            .child("[config]")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_config(window, cx);
-                            })),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("btn-config")
+                                    .opacity(0.)
+                                    .group_hover("top-bar", |s| s.opacity(1.))
+                                    .cursor_pointer()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|s| s.text_color(cx.theme().foreground))
+                                    .child("[config]")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_config(window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("btn-new-chat")
+                                    .opacity(0.)
+                                    .group_hover("top-bar", |s| s.opacity(1.))
+                                    .cursor_pointer()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|s| s.text_color(cx.theme().foreground))
+                                    .child("[+ new]")
+                                    .tooltip(|window, cx| wrapped_tip("Start new conversation thread".into()).build(window, cx))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.new_session(window, cx);
+                                    })),
+                            ),
                     )
                     .child(
                         h_flex()

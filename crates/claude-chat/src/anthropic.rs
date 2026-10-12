@@ -50,6 +50,57 @@ pub enum ClaudeStreamEvent {
     Error(String),
 }
 
+pub async fn create_conversation(config: &ClaudeConfig, name: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "anthropic-client-platform",
+        HeaderValue::from_static("web_claude_ai"),
+    );
+    headers.insert(
+        "anthropic-client-sha",
+        HeaderValue::from_static("d40c622ef07c4d318d1504ae40fabc3faa8a85fa"),
+    );
+    if let Ok(dev_val) = HeaderValue::from_str(config.device_id.trim()) {
+        headers.insert("anthropic-device-id", dev_val);
+    }
+    headers.insert(ORIGIN, HeaderValue::from_static("https://claude.ai"));
+    headers.insert(REFERER, HeaderValue::from_static("https://claude.ai/chats"));
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"),
+    );
+    if let Ok(cookie_val) = HeaderValue::from_str(config.cookie.trim()) {
+        headers.insert(COOKIE, cookie_val);
+    }
+
+    let conv_uuid = uuid::Uuid::now_v7().to_string();
+    let url = format!(
+        "https://claude.ai/api/organizations/{}/chat_conversations",
+        config.org_id.trim()
+    );
+
+    let body = json!({
+        "uuid": conv_uuid,
+        "name": if name.trim().is_empty() { "" } else { name.trim() }
+    });
+
+    let res = client.post(&url).headers(headers).json(&body).send().await?;
+    if res.status().is_success() {
+        if let Ok(val) = res.json::<serde_json::Value>().await {
+            if let Some(id) = val.get("uuid").and_then(|u| u.as_str()) {
+                return Ok(id.to_string());
+            }
+        }
+        Ok(conv_uuid)
+    } else {
+        // Fallback: If creation endpoint fails or returns error, generated uuid can still be used locally
+        Ok(conv_uuid)
+    }
+}
+
 pub async fn send_prompt_stream<F>(
     prompt: &str,
     parent_uuid: Option<&str>,

@@ -108,10 +108,10 @@ impl Chat {
 
         let old_conv = self.config.conv_id.clone();
         self.config = ClaudeConfig {
-            cookie: if cookie.is_empty() { anthropic::DEFAULT_COOKIE.to_string() } else { cookie },
-            org_id: if org_id.is_empty() { "d161e2d8-44da-4d0d-a388-f4920847a725".to_string() } else { org_id },
-            conv_id: if conv_id.is_empty() { "2139e97c-12a2-4e44-ba2b-c9fe848d0b97".to_string() } else { conv_id },
-            device_id: if device_id.is_empty() { "6a335f5c-b5e1-478f-8d41-4a05cd093288".to_string() } else { device_id },
+            cookie,
+            org_id,
+            conv_id,
+            device_id,
             model: if model.is_empty() { "claude-haiku-5-5".to_string() } else { model },
         };
         if self.config.conv_id != old_conv {

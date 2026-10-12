@@ -326,30 +326,61 @@ fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_single = false;
+    let mut in_ansi_single = false;
     let mut in_double = false;
     let mut chars = input.chars().peekable();
 
     while let Some(c) = chars.next() {
         match c {
+            '$' if !in_single && !in_ansi_single && !in_double && chars.peek() == Some(&'\'') => {
+                chars.next();
+                in_ansi_single = true;
+            }
+            '\'' if in_ansi_single => {
+                in_ansi_single = false;
+            }
             '\'' if !in_double => {
                 in_single = !in_single;
             }
-            '"' if !in_single => {
+            '"' if !in_single && !in_ansi_single => {
                 in_double = !in_double;
+            }
+            '\\' if in_ansi_single => {
+                if let Some(next) = chars.next() {
+                    match next {
+                        'n' => current.push('\n'),
+                        'r' => current.push('\r'),
+                        't' => current.push('\t'),
+                        '\\' => current.push('\\'),
+                        '\'' => current.push('\''),
+                        '"' => current.push('"'),
+                        _ => {
+                            current.push(next);
+                        }
+                    }
+                }
+            }
+            '\\' if in_single => {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    current.push('\'');
+                } else {
+                    current.push('\\');
+                }
             }
             '\\' if in_double => {
                 if let Some(next) = chars.next() {
                     current.push(next);
                 }
             }
-            ' ' | '\t' | '\n' | '\r' if !in_single && !in_double => {
+            ' ' | '\t' | '\n' | '\r' if !in_single && !in_ansi_single && !in_double => {
                 let tok = current.trim().to_string();
                 if !tok.is_empty() {
                     tokens.push(tok);
                 }
                 current.clear();
             }
-            '\\' if !in_single && !in_double => {
+            '\\' if !in_single && !in_ansi_single && !in_double => {
                 // line continuation: consume optional trailing spaces and \r\n or \n
                 while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
                     chars.next();

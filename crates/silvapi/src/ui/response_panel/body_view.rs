@@ -352,6 +352,35 @@ impl ResponsePanel {
                                     menu
                                 })
                         })
+                        .when(
+                            self.app_state.read(cx).response.as_ref().map_or(false, |r| {
+                                r.headers.iter().any(|(k, v)| {
+                                    k.to_lowercase() == "content-type"
+                                        && v.contains("text/event-stream")
+                                })
+                            }),
+                            |el| {
+                                el.child(
+                                    Button::new("sse-raw-view-toggle")
+                                        .label(if self.sse_raw_view {
+                                            "Event Stream"
+                                        } else {
+                                            "Raw Text"
+                                        })
+                                        .tooltip(if self.sse_raw_view {
+                                            "Switch to parsed event stream view"
+                                        } else {
+                                            "Switch to raw text editor view"
+                                        })
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.sse_raw_view = !this.sse_raw_view;
+                                            cx.notify();
+                                        })),
+                                )
+                            },
+                        )
                         .child(
                             Button::new("response-download")
                                 .icon(IconName::File)

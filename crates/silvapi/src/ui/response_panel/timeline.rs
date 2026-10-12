@@ -251,122 +251,127 @@ impl ResponsePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let text = self.response_text.clone();
-        let mut events = Vec::new();
-        for block in text.split("\n\n") {
-            if events.len() >= SSE_MAX_EVENTS {
-                break;
-            }
-            if block.is_empty() {
-                continue;
-            }
-            let mut event_type = "message";
-            let mut data = String::new();
-            for line in block.split('\n') {
-                if let Some(rest) = line.strip_prefix("event: ") {
-                    event_type = rest;
-                } else if let Some(rest) = line.strip_prefix("data: ") {
-                    if !data.is_empty() {
-                        append_sse_detail_text(&mut data, "\n");
-                    }
-                    append_sse_detail_text(&mut data, rest);
-                }
-            }
-            if !data.is_empty() {
-                events.push((event_type.to_string(), data));
-            }
-        }
+        let events = parse_sse_events(&self.response_text);
 
         let selected_idx = self.selected_sse_event;
         let events_len = events.len();
         let selected_event_data =
             selected_idx.and_then(|idx| events.get(idx).map(|(_, data)| data.clone()));
 
-        let list = uniform_list(
-            "sse-scroll",
-            events_len,
-            cx.processor(move |_this: &mut Self, range, _window, cx| {
-                let mut children = Vec::new();
-                for idx in range {
-                    if let Some((etype, data)) = events.get(idx) {
-                        let selected = selected_idx == Some(idx);
-                        let bg_color = if selected {
-                            cx.theme().primary.opacity(0.1)
-                        } else {
-                            gpui_kit::transparent_black()
-                        };
-                        let border = if selected {
-                            gpui_kit::transparent_black()
-                        } else {
-                            cx.theme().border.opacity(0.5)
-                        };
-                        let etype = etype.clone();
-                        let data_preview = single_line_preview(data, SSE_ROW_PREVIEW_BYTES);
+        let list = if events_len == 0 {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .text_color(cx.theme().muted_foreground)
+                .child(
+                    div()
+                        .text_sm()
+                        .child("No SSE events found in stream"),
+                )
+                .child(
+                    Button::new("sse-switch-to-raw")
+                        .label("View Raw Text")
+                        .ghost()
+                        .xsmall()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sse_raw_view = true;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else {
+            uniform_list(
+                "sse-scroll",
+                events_len,
+                cx.processor(move |_this: &mut Self, range, _window, cx| {
+                    let mut children = Vec::new();
+                    for idx in range {
+                        if let Some((etype, data)) = events.get(idx) {
+                            let selected = selected_idx == Some(idx);
+                            let bg_color = if selected {
+                                cx.theme().primary.opacity(0.1)
+                            } else {
+                                gpui_kit::transparent_black()
+                            };
+                            let border = if selected {
+                                gpui_kit::transparent_black()
+                            } else {
+                                cx.theme().border.opacity(0.5)
+                            };
+                            let etype = etype.clone();
+                            let data_preview = single_line_preview(data, SSE_ROW_PREVIEW_BYTES);
 
-                        children.push(
-                            h_flex()
-                                .w_full()
-                                .gap_3()
-                                .py_1()
-                                .px_2()
-                                .rounded_md()
-                                .bg(bg_color)
-                                .border_b_1()
-                                .border_color(border)
-                                .cursor_pointer()
-                                .id(idx)
-                                .on_mouse_down(
-                                    gpui_kit::MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        if this.selected_sse_event == Some(idx) {
-                                            this.selected_sse_event = None;
-                                        } else {
-                                            this.selected_sse_event = Some(idx);
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(
-                                    div()
-                                        .bg(cx.theme().muted)
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_md()
-                                        .text_sm()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(idx.to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .bg(cx.theme().muted)
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_md()
-                                        .text_sm()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(single_line(etype)),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_sm()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .text_color(cx.theme().foreground)
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(single_line(data_preview)),
-                                )
-                                .into_any_element(),
-                        );
+                            children.push(
+                                h_flex()
+                                    .w_full()
+                                    .h(px(32.))
+                                    .items_center()
+                                    .gap_3()
+                                    .px_2()
+                                    .rounded_md()
+                                    .bg(bg_color)
+                                    .border_b_1()
+                                    .border_color(border)
+                                    .cursor_pointer()
+                                    .id(idx)
+                                    .on_mouse_down(
+                                        gpui_kit::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if this.selected_sse_event == Some(idx) {
+                                                this.selected_sse_event = None;
+                                            } else {
+                                                this.selected_sse_event = Some(idx);
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .bg(cx.theme().muted)
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_md()
+                                            .text_sm()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .child(idx.to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .bg(cx.theme().muted)
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_md()
+                                            .text_sm()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .child(single_line(etype)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_color(cx.theme().foreground)
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(single_line(data_preview)),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                     }
-                }
-                children
-            }),
-        )
-        .track_scroll(&self.sse_scroll)
-        .size_full();
+                    children
+                }),
+            )
+            .track_scroll(&self.sse_scroll)
+            .size_full()
+            .into_any_element()
+        };
 
         let container = v_flex()
             .size_full()
@@ -569,26 +574,10 @@ impl ResponsePanel {
 
     pub(super) fn current_sse_detail_text(&self) -> Option<String> {
         let selected_idx = self.selected_sse_event?;
-        let mut idx = 0;
-        for block in self.response_text.split("\n\n") {
-            if block.is_empty() {
-                continue;
-            }
-            if idx == selected_idx {
-                let mut data = String::new();
-                for line in block.split('\n') {
-                    if let Some(rest) = line.strip_prefix("data: ") {
-                        if !data.is_empty() {
-                            data.push('\n');
-                        }
-                        data.push_str(rest);
-                    }
-                }
-                return Some(format_sse_detail_text(&data));
-            }
-            idx += 1;
-        }
-        None
+        let events = parse_sse_events(&self.response_text);
+        events
+            .get(selected_idx)
+            .map(|(_, data)| format_sse_detail_text(data))
     }
 
     pub(super) fn has_room_for_sse_side_detail(window: &Window) -> bool {

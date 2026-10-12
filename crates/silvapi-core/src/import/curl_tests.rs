@@ -131,3 +131,12 @@ fn handles_line_continuations_with_whitespace() {
     assert_eq!(req.body.content, "{\"ok\":true}");
 }
 
+#[test]
+fn handles_ansi_c_single_quotes_and_escapes() {
+    let cmd = r#"curl 'https://example.com/api' --data-raw $'{"prompt":"what\'s this","model":"haiku"}'"#;
+    let req = parse_curl(cmd).unwrap();
+    assert_eq!(req.method, HttpMethod::POST);
+    assert_eq!(req.body.body_type, BodyType::Json);
+    assert_eq!(req.body.content, r#"{"prompt":"what's this","model":"haiku"}"#);
+}
+

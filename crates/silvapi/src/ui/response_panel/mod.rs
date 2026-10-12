@@ -151,6 +151,7 @@ pub struct ResponsePanel {
     response_text: String,
     soft_wrap: bool,
     response_editor_plain: bool,
+    sse_raw_view: bool,
     sse_detail_soft_wrap: bool,
     sse_detail_column_layout: bool,
     headers_source_view: bool,
@@ -216,6 +217,7 @@ impl ResponsePanel {
             response_text: String::new(),
             soft_wrap: true,
             response_editor_plain: false,
+            sse_raw_view: false,
             sse_detail_soft_wrap: true,
             sse_detail_column_layout: false,
             headers_source_view: false,
@@ -579,7 +581,7 @@ impl Render for ResponsePanel {
                                         })
                                     });
 
-                            if is_sse {
+                            if is_sse && !self.sse_raw_view {
                                 el.child(self.render_sse_tab(_window, cx))
                             } else {
                                 el.child(
@@ -1288,6 +1290,38 @@ fn single_line_preview(value: &str, max_bytes: usize) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+fn parse_sse_events(text: &str) -> Vec<(String, String)> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut events = Vec::new();
+    for block in normalized.split("\n\n") {
+        if events.len() >= SSE_MAX_EVENTS {
+            break;
+        }
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut event_type = "message";
+        let mut data = String::new();
+        for line in block.lines() {
+            let line = line.trim_end();
+            if let Some(rest) = line.strip_prefix("event:") {
+                event_type = rest.strip_prefix(' ').unwrap_or(rest);
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                let payload = rest.strip_prefix(' ').unwrap_or(rest);
+                if !data.is_empty() {
+                    append_sse_detail_text(&mut data, "\n");
+                }
+                append_sse_detail_text(&mut data, payload);
+            }
+        }
+        if !data.is_empty() {
+            events.push((event_type.to_string(), data));
+        }
+    }
+    events
 }
 
 fn append_sse_detail_text(out: &mut String, value: &str) {
